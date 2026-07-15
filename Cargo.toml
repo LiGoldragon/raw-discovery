@@ -1,0 +1,25 @@
+[package]
+name         = "raw-discovery"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.85"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/LiGoldragon/raw-discovery"
+description  = "Language-agnostic raw structure layer: discovers NOTA-family structure, never classifies."
+publish      = false
+
+[lib]
+name = "raw_discovery"
+path = "src/lib.rs"
+
+[dependencies]
+# The exact portable-archive feature set, mirrored inline. content-identity
+# (the shared PortableArchive bound) is not yet published; see the bead to adopt
+# the shared bound once it lands.
+rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused      = { level = "warn", priority = -1 }
+dead_code   = "warn"
