@@ -69,17 +69,15 @@ fn a_dashed_atom_reads_as_kebab_not_pascal_or_camel() {
     assert!(!dashed.qualifies_as_camel_case_symbol());
 }
 
-/// `AtomCase::matches` agrees with `AtomCase::of` for the classified case and
-/// with the symbol catch-all for every non-empty atom.
+/// `AtomCase::matches` is the public partition predicate: only the atom's one
+/// classified case matches.
 #[test]
-fn atom_case_matches_agrees_with_classification() {
+fn atom_case_matches_agrees_with_partitioned_classification() {
     let atom = Atom::new("PascalThing");
     assert!(AtomCase::PascalCase.matches(&atom));
-    assert!(
-        AtomCase::Symbol.matches(&atom),
-        "every symbol matches Symbol"
-    );
+    assert!(!AtomCase::Symbol.matches(&atom));
     assert!(!AtomCase::CamelCase.matches(&atom));
+    assert!(!AtomCase::KebabCase.matches(&atom));
 }
 
 /// A double semicolon is a comment; a single semicolon is ordinary atom text.

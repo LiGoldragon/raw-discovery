@@ -10,6 +10,7 @@
 use thiserror::Error;
 
 use crate::block::Delimiter;
+use crate::profile::TokenProfileError;
 
 /// A byte-and-line position in the recognized source. Carried by
 /// [`RecognizeError`] alone.
@@ -71,6 +72,14 @@ pub enum RecognizeError {
     )]
     UnsupportedGlyph {
         glyph: char,
+        position: SourcePosition,
+    },
+
+    /// The sealed profile or active trigger set could not be executed at this
+    /// recursive position.
+    #[error("lexical profile failure at {}:{}: {source}", .position.line, .position.column)]
+    Profile {
+        source: TokenProfileError,
         position: SourcePosition,
     },
 }

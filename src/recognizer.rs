@@ -1,52 +1,66 @@
 //! The entry point: a [`Recognizer`] turns source text into a [`Document`] of
-//! raw [`Block`]s under a versioned [`RawProfile`], and the [`RawLayer`]
-//! boundary that lets NOTA-family forms share the recognizer while foreign
-//! languages supply their own adapter.
+//! raw [`Block`]s under a sealed profile, and the [`RawLayer`] typed
+//! target-language boundary.
 //!
-//! The recognizer is a right-associative recursive-descent reader lifted
-//! verbatim from nota's psyche-blessed next-gen parser. It discovers delimiter
-//! nesting, right-associative dot-application, pipe text, and bare atoms — and
-//! never classifies any of them. It is a hand-written reader by deliberate
-//! design: it *is* the blessed ground-truth grammar being lifted into a
-//! nota-independent boundary crate, so neither delegating to the nota codec (a
-//! forbidden dependency) nor a parser-combinator rewrite (which would abandon
-//! the verbatim lift of green, blessed code) applies here.
+//! The compatibility recognizer discovers established NOTA delimiter nesting,
+//! right-associative dot-application, pipe text, and bare atoms without
+//! classifying meaning. Its cursor consults a sealed trigger set and never
+//! produces a preliminary token stream. New textual surfaces use the same
+//! boundary-profile machinery through their sealed structural forms.
 
 use crate::block::{Atom, Block, Delimiter, PipeText};
+use crate::boundary::{BoundaryReader, BoundarySide, TriggerMatch, TriggerMatchKind};
 use crate::error::{RecognizeError, SourcePosition};
-use crate::profile::{GlyphSet, RawProfile};
+use crate::profile::{RawProfile, SealedTokenProfile, SealedTriggerSet, TokenProfileError};
 
 /// The raw-structure entry point. Carries the versioned profile it recognizes
 /// under; a new glyph is a new [`RawProfile`], never a runtime guess.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Recognizer {
-    profile: RawProfile,
+    profile: SealedTokenProfile,
 }
+
+impl PartialEq for Recognizer {
+    fn eq(&self, other: &Self) -> bool {
+        self.profile.identity() == other.profile.identity()
+    }
+}
+
+impl Eq for Recognizer {}
 
 impl Recognizer {
     pub fn new(profile: RawProfile) -> Self {
+        Self::with_profile(
+            profile
+                .seal()
+                .expect("the named compatibility profiles are statically valid"),
+        )
+    }
+
+    pub fn with_profile(profile: SealedTokenProfile) -> Self {
         Self { profile }
     }
 
-    /// A recognizer under the base NOTA [`Standard`](GlyphSet::Standard) profile.
+    /// A recognizer under the base NOTA
+    /// [`Standard`](crate::GlyphSet::Standard) profile.
     pub fn standard() -> Self {
         Self::new(RawProfile::standard())
     }
 
-    /// A recognizer under the Nomos [`NomosExtended`](GlyphSet::NomosExtended)
-    /// profile (the `$` sigil admitted).
+    /// A recognizer under the Nomos
+    /// [`NomosExtended`](crate::GlyphSet::NomosExtended) profile.
     pub fn nomos_extended() -> Self {
         Self::new(RawProfile::nomos_extended())
     }
 
-    pub fn profile(&self) -> RawProfile {
-        self.profile
+    pub fn profile(&self) -> &SealedTokenProfile {
+        &self.profile
     }
 
     /// Recognize the raw structure of `source` into an ordered document of
     /// top-level objects. Discovers structure; classifies nothing.
     pub fn recognize(&self, source: &str) -> Result<Document, RecognizeError> {
-        let mut reading = SourceReading::new(source, self.profile.glyphs());
+        let mut reading = SourceReading::new(source, &self.profile);
         let root_objects = reading.read_document()?;
         Ok(Document::from_root_objects(root_objects))
     }
@@ -54,25 +68,21 @@ impl Recognizer {
 
 pub use crate::block::Document;
 
-/// The raw-layer boundary the whole textual family sits on. NOTA-family forms —
-/// schema, Nomos, logos — share the [`Recognizer`]; a foreign language supplies
-/// its own adapter through the [`Foreign`](RawLayer::Foreign) arm.
-///
-/// This is the principled seam: the recognizer discovers NOTA structure, and a
-/// language whose surface is not NOTA (Rust through `syn`, say) is recognized by
-/// a consumer-supplied adapter rather than by pretending its grammar is NOTA.
+/// The raw-layer boundary the whole textual family sits on.
+/// [`Foreign`](RawLayer::Foreign) names a target language but does not install
+/// a parser, printer, or second evaluator.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RawLayer {
     /// A NOTA-family form: recognized by the shared [`Recognizer`].
     Recognizer(Recognizer),
     /// A foreign-language form: a typed placeholder here, implemented by the
-    /// consuming crate's own parse/unparse adapter.
+    /// consuming crate's sealed textual data.
     Foreign(ForeignRawLayer),
 }
 
 impl RawLayer {
-    /// A NOTA-family raw layer under the base [`Standard`](GlyphSet::Standard)
-    /// profile.
+    /// A NOTA-family raw layer under the base
+    /// [`Standard`](crate::GlyphSet::Standard) profile.
     pub fn standard() -> Self {
         Self::Recognizer(Recognizer::standard())
     }
@@ -100,10 +110,9 @@ impl RawLayer {
 }
 
 /// The foreign-language arm of the raw-layer boundary — a **typed placeholder**.
-/// It names which language the form targets; the actual parse-on-decode and
-/// unparse-on-encode adapter (Rust's `syn` + `prettyplease`, for instance) lives
-/// in the consuming crate, not here. raw-discovery holds no foreign grammar and
-/// pulls in no foreign parser.
+/// It names which language the form targets. The target supplies sealed lexical
+/// and structural-form data to the shared evaluator. raw-discovery holds no
+/// target grammar and exposes no parser escape hatch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForeignRawLayer {
     language: ForeignLanguage,
@@ -131,8 +140,7 @@ impl ForeignLanguage {
         Self { name: name.into() }
     }
 
-    /// The Rust foreign language — the reference foreign adapter the family
-    /// draws (recognized by `syn`, emitted by `prettyplease`, in the consumer).
+    /// The Rust target language.
     pub fn rust() -> Self {
         Self::new("rust")
     }
@@ -143,31 +151,46 @@ impl ForeignLanguage {
 }
 
 /// The reading cursor over one source text. Data-bearing (it owns the source
-/// slice, the byte/line cursor, and the active glyph set), so the recognition
+/// slice, the byte/line cursor, and the active trigger set), so the recognition
 /// rules are methods on it rather than free functions.
 struct SourceReading<'source> {
     source: &'source str,
     cursor: Cursor,
-    glyphs: GlyphSet,
+    profile: &'source SealedTokenProfile,
+    active: SealedTriggerSet,
 }
 
 impl<'source> SourceReading<'source> {
-    fn new(source: &'source str, glyphs: GlyphSet) -> Self {
+    fn new(source: &'source str, profile: &'source SealedTokenProfile) -> Self {
         Self {
             source,
             cursor: Cursor::start(),
-            glyphs,
+            profile,
+            active: profile.root_trigger_set(),
         }
     }
 
     fn read_document(&mut self) -> Result<Vec<Block>, RecognizeError> {
         let mut root_objects = Vec::new();
         loop {
-            self.skip_spacing();
-            let Some(character) = self.peek() else {
+            self.skip_spacing()?;
+            if self.peek().is_none() {
                 return Ok(root_objects);
-            };
-            if Delimiter::from_closing(character).is_some() {
+            }
+            if let Some(matched) = self.matched_trigger()? {
+                if matches!(
+                    matched.kind(),
+                    TriggerMatchKind::Boundary(BoundarySide::Closing)
+                ) {
+                    return Err(RecognizeError::UnexpectedClose {
+                        found: self.peek().unwrap_or('?'),
+                        position: self.cursor.position(),
+                    });
+                }
+            }
+            if let Some(character) = self.peek()
+                && Delimiter::from_closing(character).is_some()
+            {
                 return Err(RecognizeError::UnexpectedClose {
                     found: character,
                     position: self.cursor.position(),
@@ -183,12 +206,15 @@ impl<'source> SourceReading<'source> {
     /// head and its payload.
     fn read_object(&mut self) -> Result<Block, RecognizeError> {
         let head = self.read_primary()?;
-        if self.peek() != Some('.') {
+        let Some(application) = self.matched_trigger()? else {
+            return Ok(head);
+        };
+        if !matches!(application.kind(), TriggerMatchKind::Application) {
             return Ok(head);
         }
         let dot = self.cursor.position();
-        self.bump();
-        if !self.at_primary_start() {
+        self.consume_to(application.end());
+        if !self.at_primary_start()? {
             return Err(RecognizeError::DanglingApplication { position: dot });
         }
         let payload = self.read_object()?;
@@ -203,12 +229,41 @@ impl<'source> SourceReading<'source> {
     /// [`read_object`](SourceReading::read_object)'s job. A leading period has
     /// no head and is rejected.
     fn read_primary(&mut self) -> Result<Block, RecognizeError> {
-        match self.peek() {
-            Some('(') if self.peek_next() == Some('|') => self.read_pipe_text(),
-            Some('(') => self.read_delimited(Delimiter::Parenthesis),
-            Some('[') => self.read_delimited(Delimiter::SquareBracket),
-            Some('{') => self.read_delimited(Delimiter::Brace),
-            Some('.') => Err(RecognizeError::UnexpectedDot {
+        match self.matched_trigger()? {
+            Some(matched) if matches!(matched.kind(), TriggerMatchKind::Carrier) => {
+                let text = matched.body().unwrap_or_default().to_owned();
+                self.consume_to(matched.end());
+                Ok(Block::PipeText(PipeText::new(text)))
+            }
+            Some(matched)
+                if matches!(
+                    matched.kind(),
+                    TriggerMatchKind::Boundary(BoundarySide::Opening)
+                ) =>
+            {
+                let delimiter = self.compatibility_delimiter(&matched)?;
+                let start = self.cursor.position();
+                self.consume_to(matched.end());
+                self.read_delimited(delimiter, matched.identifier(), start)
+            }
+            Some(matched) if matches!(matched.kind(), TriggerMatchKind::Application) => {
+                Err(RecognizeError::UnexpectedDot {
+                    position: self.cursor.position(),
+                })
+            }
+            Some(matched)
+                if matches!(
+                    matched.kind(),
+                    TriggerMatchKind::Boundary(BoundarySide::Closing)
+                ) =>
+            {
+                Err(RecognizeError::UnexpectedClose {
+                    found: self.peek().unwrap_or('?'),
+                    position: self.cursor.position(),
+                })
+            }
+            Some(matched) if matched.is_trivia() => Err(RecognizeError::Profile {
+                source: TokenProfileError::UnsupportedCompatibilityTrigger(matched.identifier()),
                 position: self.cursor.position(),
             }),
             // A misplaced pipe-close (`|)`) at object position would make
@@ -216,48 +271,61 @@ impl<'source> SourceReading<'source> {
             // enclosing loop would spin forever, growing the vector until memory
             // is exhausted. Reject it so the reader always makes progress on
             // malformed input.
-            Some('|') if self.at_pipe_close() => Err(RecognizeError::UnexpectedClose {
-                found: self.peek_next().unwrap_or('|'),
-                position: self.cursor.position(),
-            }),
+            None if self.peek() == Some('|') && self.at_pipe_close() => {
+                Err(RecognizeError::UnexpectedClose {
+                    found: self.peek_next().unwrap_or('|'),
+                    position: self.cursor.position(),
+                })
+            }
             Some(_) | None => self.read_atom(),
         }
     }
 
     /// Whether the cursor sits on a character that can begin a primary object —
     /// the gate deciding whether a dot-application period has a glued payload.
-    fn at_primary_start(&self) -> bool {
-        match self.peek() {
-            None => false,
-            Some('.') => false,
-            Some(character) if character.is_whitespace() => false,
-            Some(character) if Delimiter::from_closing(character).is_some() => false,
-            Some(_) if self.at_comment_start() => false,
-            Some(_) if self.at_pipe_close() => false,
-            Some(_) => true,
-        }
+    fn at_primary_start(&self) -> Result<bool, RecognizeError> {
+        Ok(match self.matched_trigger()? {
+            Some(matched) => matches!(
+                matched.kind(),
+                TriggerMatchKind::Boundary(BoundarySide::Opening)
+                    | TriggerMatchKind::Carrier
+                    | TriggerMatchKind::Punctuation
+                    | TriggerMatchKind::LeadingCharacterClass
+            ),
+            None => match self.peek() {
+                None => false,
+                Some(character) if Delimiter::from_closing(character).is_some() => false,
+                Some(_) if self.at_pipe_close() => false,
+                Some(_) => true,
+            },
+        })
     }
 
-    fn read_delimited(&mut self, delimiter: Delimiter) -> Result<Block, RecognizeError> {
-        let start = self.cursor.position();
-        self.bump();
+    fn read_delimited(
+        &mut self,
+        delimiter: Delimiter,
+        identifier: crate::TriggerIdentifier,
+        start: SourcePosition,
+    ) -> Result<Block, RecognizeError> {
         let mut root_objects = Vec::new();
         loop {
-            self.skip_spacing();
+            self.skip_spacing()?;
             let Some(character) = self.peek() else {
                 return Err(RecognizeError::UnclosedDelimiter {
                     delimiter,
                     position: start,
                 });
             };
-            if character == delimiter.closing_character() {
-                self.bump();
-                return Ok(Block::Delimited {
-                    delimiter,
-                    root_objects,
-                });
-            }
-            if Delimiter::from_closing(character).is_some() {
+            if let Some(matched) = self.matched_trigger()?
+                && let TriggerMatchKind::Boundary(BoundarySide::Closing) = matched.kind()
+            {
+                if matched.identifier() == identifier {
+                    self.consume_to(matched.end());
+                    return Ok(Block::Delimited {
+                        delimiter,
+                        root_objects,
+                    });
+                }
                 return Err(RecognizeError::UnexpectedClose {
                     found: character,
                     position: self.cursor.position(),
@@ -267,90 +335,88 @@ impl<'source> SourceReading<'source> {
         }
     }
 
-    fn read_pipe_text(&mut self) -> Result<Block, RecognizeError> {
-        let start = self.cursor.position();
-        self.bump();
-        self.bump();
-        let mut text = String::new();
-        while let Some(character) = self.peek() {
-            if character == '\\' {
-                self.bump();
-                if let Some(escaped) = self.peek() {
-                    text.push(escaped);
-                    self.bump();
-                } else {
-                    text.push('\\');
-                }
-            } else if character == '|' && self.peek_next() == Some(')') {
-                self.bump();
-                self.bump();
-                return Ok(Block::PipeText(PipeText::new(text)));
-            } else {
-                text.push(character);
-                self.bump();
-            }
-        }
-        Err(RecognizeError::UnclosedPipeText { position: start })
-    }
-
     fn read_atom(&mut self) -> Result<Block, RecognizeError> {
         let start = self.cursor.position();
-        while let Some(character) = self.peek() {
-            if character.is_whitespace()
-                || character == '.'
-                || Delimiter::from_opening(character).is_some()
-                || Delimiter::from_closing(character).is_some()
-                || self.at_comment_start()
-                || self.at_pipe_close()
-            {
-                break;
-            }
-            self.bump();
-        }
-        let end = self.cursor.position();
-        let text = self.source[start.byte_offset..end.byte_offset].to_owned();
-        self.check_atom_glyphs(&text, start)?;
-        Ok(Block::Atom(Atom::new(text)))
-    }
-
-    /// Reject glyphs the active profile does not admit. Today the `$` sigil
-    /// under the [`Standard`](GlyphSet::Standard) set is the only such glyph;
-    /// under [`NomosExtended`](GlyphSet::NomosExtended) it passes. This is where
-    /// the profile is versioned data rather than a runtime heuristic.
-    fn check_atom_glyphs(&self, text: &str, start: SourcePosition) -> Result<(), RecognizeError> {
-        if !self.glyphs.admits_dollar_sigil() && text.contains('$') {
-            return Err(RecognizeError::UnsupportedGlyph {
-                glyph: '$',
+        let mut boundary = BoundaryReader::new(self.source, self.profile);
+        boundary.advance_to(start.byte_offset);
+        let text = boundary
+            .read_bare(&self.active)
+            .map_err(|error| self.recognize_profile_error(error))?;
+        let Some(text) = text else {
+            let matched = boundary
+                .longest_match(&self.active)
+                .map_err(|error| self.recognize_profile_error(error))?
+                .expect("read_atom is called only at a non-empty primary position");
+            return Err(RecognizeError::Profile {
+                source: TokenProfileError::UnsupportedCompatibilityTrigger(matched.identifier()),
                 position: start,
             });
-        }
-        Ok(())
+        };
+        self.consume_to(boundary.byte_offset());
+        Ok(Block::Atom(Atom::new(text)))
     }
 
     fn at_pipe_close(&self) -> bool {
         self.peek() == Some('|') && self.peek_next() == Some(')')
     }
 
-    fn at_comment_start(&self) -> bool {
-        self.peek() == Some(';') && self.peek_next() == Some(';')
+    fn skip_spacing(&mut self) -> Result<(), RecognizeError> {
+        loop {
+            let Some(matched) = self.matched_trigger()? else {
+                return Ok(());
+            };
+            if !matched.is_trivia() {
+                return Ok(());
+            }
+            self.consume_to(matched.end());
+        }
     }
 
-    fn skip_spacing(&mut self) {
-        loop {
-            match self.peek() {
-                Some(character) if character.is_whitespace() => {
-                    self.bump();
+    fn matched_trigger(&self) -> Result<Option<TriggerMatch>, RecognizeError> {
+        let mut boundary = BoundaryReader::new(self.source, self.profile);
+        boundary.advance_to(self.cursor.byte_offset);
+        boundary
+            .longest_match(&self.active)
+            .map_err(|error| self.recognize_profile_error(error))
+    }
+
+    fn recognize_profile_error(&self, error: TokenProfileError) -> RecognizeError {
+        match error {
+            TokenProfileError::UnclosedCarrier { .. } => RecognizeError::UnclosedPipeText {
+                position: self.cursor.position(),
+            },
+            TokenProfileError::ForbiddenBareCharacter { character, .. } => {
+                RecognizeError::UnsupportedGlyph {
+                    glyph: character,
+                    position: self.cursor.position(),
                 }
-                Some(';') if self.peek_next() == Some(';') => {
-                    while let Some(character) = self.peek() {
-                        self.bump();
-                        if character == '\n' {
-                            break;
-                        }
-                    }
-                }
-                _ => return,
             }
+            source => RecognizeError::Profile {
+                source,
+                position: self.cursor.position(),
+            },
+        }
+    }
+
+    fn compatibility_delimiter(&self, matched: &TriggerMatch) -> Result<Delimiter, RecognizeError> {
+        let text = self.source_between(matched.start(), matched.end());
+        text.chars()
+            .next()
+            .and_then(Delimiter::from_opening)
+            .filter(|_| text.chars().count() == 1)
+            .ok_or_else(|| RecognizeError::Profile {
+                source: TokenProfileError::UnsupportedCompatibilityBoundary(matched.identifier()),
+                position: self.cursor.position(),
+            })
+    }
+
+    fn source_between(&self, start: usize, end: usize) -> &str {
+        &self.source[start..end]
+    }
+
+    fn consume_to(&mut self, end: usize) {
+        while self.cursor.byte_offset < end {
+            self.bump();
         }
     }
 

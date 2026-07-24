@@ -24,29 +24,33 @@
 //! - [`AtomCase`] — the capitalization classifier, exposed as **data** with no
 //!   meaning attached.
 //!
-//! ## Profiles are versioned data
+//! ## Profiles are sealed, versioned data
 //!
-//! A [`RawProfile`] pairs a [`GlyphSet`] with a [`ProfileRevision`]. The glyph
-//! vocabulary a recognizer admits is versioned data, never a runtime guess:
-//! [`GlyphSet::Standard`] rejects the `$` sigil that [`GlyphSet::NomosExtended`]
-//! admits, and admitting a new glyph is a new profile revision.
+//! [`TokenProfileData`] identifies generic boundary triggers. A structural
+//! position activates a [`TriggerSet`], and [`BoundaryReader`] applies longest
+//! complete match only within that sealed active set. Recognition is
+//! boundary-first and recursive; it never constructs a preliminary token
+//! stream. [`RawProfile`] and [`GlyphSet`] remain compatibility selectors for
+//! the established NOTA profiles and seal into the same generic machinery.
 //!
 //! ## The raw-layer boundary
 //!
-//! [`RawLayer`] is the seam the whole textual family sits on: NOTA-family forms
-//! share the [`Recognizer`]; a foreign language (Rust via `syn`, for instance)
-//! supplies its own adapter through [`RawLayer::Foreign`], a typed placeholder
-//! this crate names but does not implement.
-//!
-//! Consumption and integration of this crate will readapt to the forthcoming
-//! release-train flow.
+//! [`RawLayer::Foreign`] is a typed target-language placeholder, not a parser
+//! escape hatch. Target languages supply sealed profile and structural-form
+//! data to the shared evaluator rather than installing another textual engine.
 
 mod block;
+mod boundary;
 mod error;
 mod profile;
 mod recognizer;
 
 pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
+pub use boundary::{BoundaryReader, BoundarySide, TriggerMatch, TriggerMatchKind};
 pub use error::{RecognizeError, SourcePosition};
-pub use profile::{GlyphSet, ProfileRevision, RawProfile};
+pub use profile::{
+    CharacterClass, GlyphSet, ProfileRevision, RawProfile, SealedTokenProfile, SealedTriggerSet,
+    TokenProfileData, TokenProfileDomain, TokenProfileError, Trigger, TriggerDefinition,
+    TriggerIdentifier, TriggerSet, TriggerTextRole,
+};
 pub use recognizer::{ForeignLanguage, ForeignRawLayer, RawLayer, Recognizer};

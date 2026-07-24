@@ -15,10 +15,11 @@ types — the machinery that reads meaning off this structure — live entirely 
 the crates above (`structural-codec` and the per-language forms), never here.
 
 This is why the crate exists as a *separate boundary* rather than a module
-inside a codec: a structure-only consumer (a formatter, a linter, a tree-sitter
-bridge) links raw-discovery alone and cannot reach any language model from
-inside it. The dependency graph enforces the invariant — raw-discovery depends
-only on `rkyv` and `thiserror`, and on no Core language type.
+inside a codec: a structure-only consumer such as a formatter or linter links
+raw-discovery alone and cannot reach any language model from inside it. The
+dependency graph enforces the invariant — raw-discovery depends only on leaf
+mechanisms such as `content-identity`, `rkyv`, and `thiserror`, and on no Core
+language type.
 
 ## Application is a designed-explicit promotion
 
@@ -45,27 +46,39 @@ ask whether an atom reads as PascalCase; the crate never stamps "object" or
 "name" onto the atom. `AtomCase::of` classifies every non-empty atom into
 exactly one case, with `Symbol` as the catch-all.
 
-## Profiles are versioned data, never runtime guessing
+## Profiles are sealed data, never runtime guessing
 
-Delimiters and glyphs serve the reader; a new glyph requires an explicit
-versioned profile revision, never a runtime heuristic (the accepted Codex
-hardening). A `RawProfile` is `{ revision: ProfileRevision, glyphs: GlyphSet }`,
-and `GlyphSet` is a closed enum: `Standard` (the base NOTA glyphs) or
-`NomosExtended` (the base set plus the `$` sigil). A recognizer under `Standard`
-that meets a `$` raises `RecognizeError::UnsupportedGlyph` rather than guessing.
-Two readers that disagree about the glyph vocabulary disagree by *identity*,
-spot-checkably, not by silent drift.
+`TokenProfileData` carries generic trigger definitions, a profile revision,
+the root trigger set, and the negative-space exclusions for bare atoms. Sealing
+validates every definition and active set, rejects equal complete matches, and
+pins the data under `TokenProfileDomain`. A new lexical rule therefore changes
+explicit versioned data and identity rather than reader code or a runtime
+heuristic.
 
-## The raw-layer boundary: shared recognizer vs foreign adapters
+Selection is local to an expected structural position. A sealed form activates
+its trigger set at the current cursor, and the generic boundary reader chooses
+the longest complete match only within that set. Vector order cannot encode
+precedence. Operators are inactive outside expression positions because those
+positions do not activate their identifiers. A closer such as `>` therefore
+cannot silently become `>>` when only the closer is active.
 
-`RawLayer` is the principled seam the whole textual family sits on. NOTA-family
-forms — schema, Nomos, logos — share the one `Recognizer`. A foreign language
-whose surface is not NOTA (Rust, recognized by `syn` and emitted by
-`prettyplease`) is served by its own adapter through the `RawLayer::Foreign`
-arm. In this crate the `Foreign` arm is a **typed placeholder**: it names the
-target language and holds no foreign grammar. The consuming crate implements the
-adapter. This keeps foreign-language parsing out of the raw NOTA layer instead
-of pretending a foreign grammar is NOTA.
+Recognition is boundary-first and recursive, not a horizontal tokenization
+pass. A group form finds its configured outside boundary while respecting its
+configured carriers and trivia, then reads the interior under the expected
+interior forms and trigger sets. Negative space between active triggers is bare
+text. No `LexicalToken` block, preliminary token stream, or parallel annotation
+tree exists.
+
+`RawProfile` and `GlyphSet` remain compatibility selectors for the established
+NOTA profiles. They seal into the same generic profile representation. Two
+readers that disagree about lexical rules disagree by content identity.
+
+## The raw-layer boundary
+
+`RawLayer::Foreign` is a typed placeholder that names a target language. It is
+not an adapter slot and not a grammar escape hatch. A target language supplies
+sealed profile and structural-form data to the shared evaluator; it does not
+install a foreign parser, printer, or second evaluator in raw-discovery.
 
 ## Structure is span-free
 
@@ -83,15 +96,14 @@ layers them above this crate.)
 ## Serialization and the portable bound
 
 The data types derive rkyv under the portable-archive feature discipline —
-little-endian, 32-bit-pointer, unaligned, `bytecheck` validation on read. The
-shared `PortableArchive` bound will live in the `content-identity` crate (the
-family's leaf). Until that crate publishes, this crate mirrors the exact feature
-set inline in `Cargo.toml` and exercises the full round-trip in `tests/archive.rs`;
-adopting the shared bound once `content-identity` lands is tracked in the epic.
+little-endian, 32-bit-pointer, unaligned, `bytecheck` validation on read.
+`content-identity` owns the shared contextual hashing mechanism. Tests lock an
+absolute profile digest and an absolute digest of a composite archived document;
+archive-image drift is therefore a failing test that forces an explicit
+layout-version decision.
 
-## Consumption readapts to the release train
+## Producer-first consumption
 
-This crate is slice one of the family proof of concept. Consumption and
-integration — which crates depend on it, how it is pinned, how it builds in the
-wider graph — will readapt to the forthcoming release-train flow; nothing here
-assumes a final integration shape.
+This micro-repository is the canonical producer for raw structural discovery.
+Consumers take exact immutable revisions through the producer-first release
+train. It is not a compatibility mirror of a monorepo.

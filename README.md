@@ -1,8 +1,3 @@
-> **DEPRECATED.** This crate is consolidated into
-> [LiGoldragon/protos](https://github.com/LiGoldragon/protos) as a member of the
-> protos cargo workspace. Every consumer now pins protos. This repository is kept
-> only for history; do not add new pins to it.
-
 # raw-discovery
 
 The language-agnostic **raw structure layer** of the NOTA language family. It
@@ -32,12 +27,26 @@ drags in any language model.
   names, but that meaning lives outside this crate; here a case is a fact about
   an atom's characters and nothing more.
 
-## Profiles are versioned data
+## Profiles are sealed, versioned data
 
-A `RawProfile` pairs a `GlyphSet` with a `ProfileRevision`. The glyph vocabulary
-a recognizer admits is versioned data, never a runtime guess: `GlyphSet::Standard`
-rejects the `$` sigil that `GlyphSet::NomosExtended` admits, and admitting a new
-glyph is a new profile revision.
+`TokenProfileData` gives generic boundary triggers compact identifiers and
+pins the complete profile under a contextual content identity. Structural
+forms activate only the trigger set relevant to the current recursive
+position. The boundary reader applies universal longest-complete-match inside
+that active set; equal complete matches are rejected when the set seals.
+Authored precedence is not representable.
+
+Recognition is boundary-first and recursive. A group boundary is found while
+configured carriers and trivia are respected, and its interior is then read
+under the expected interior forms. The negative space between active triggers
+is a bare atom. No preliminary token stream or parallel annotation tree is
+constructed.
+
+`RawProfile` and `GlyphSet` remain compatibility selectors for the established
+NOTA profiles. Sealing either selector produces the same generic
+`SealedTokenProfile` machinery used by new textual forms. Two readers that
+disagree about lexical data disagree by profile identity rather than silently
+drifting.
 
 ```rust
 use raw_discovery::Recognizer;
@@ -51,17 +60,18 @@ assert!(block.is_application());
 
 ## The raw-layer boundary
 
-`RawLayer` is the seam the whole textual family sits on: NOTA-family forms
-(schema, Nomos, logos) share the `Recognizer`; a foreign language (Rust via
-`syn`, for instance) supplies its own adapter through `RawLayer::Foreign`, a
-typed placeholder this crate names but does not implement.
+`RawLayer` names the textual family boundary. `RawLayer::Foreign` is only a
+typed language placeholder; it is not a parser escape hatch. Target languages
+supply sealed profile and structural-form data to the shared evaluator. They do
+not install another parser, printer, or textual engine here.
 
 ## Status
 
-Version 0.1.0 — slice one of the language-family proof of concept. Serialization
-uses rkyv under the portable-archive feature discipline (little-endian,
-32-bit-pointer, unaligned, validated-on-read). Consumption and integration will
-readapt to the forthcoming release-train flow.
+This micro-repository is the canonical producer for raw structural discovery.
+Serialization uses rkyv under the portable-archive feature discipline
+(little-endian, 32-bit-pointer, unaligned, validated-on-read). Contextual
+identity domains have absolute digest locks so an archive-image change requires
+an explicit layout-version decision.
 
 See `ARCHITECTURE.md` for the durable direction and the boundary rulings this
 crate embodies. Built and checked through Nix: `nix flake check`.

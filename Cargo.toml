@@ -13,9 +13,7 @@ name = "raw_discovery"
 path = "src/lib.rs"
 
 [dependencies]
-# The exact portable-archive feature set, mirrored inline. content-identity
-# (the shared PortableArchive bound) is not yet published; see the bead to adopt
-# the shared bound once it lands.
+content-identity = { git = "https://github.com/LiGoldragon/content-identity.git", rev = "076a48954b0cdb416b6aca1203da811e2146a731" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 thiserror = "2"
 
