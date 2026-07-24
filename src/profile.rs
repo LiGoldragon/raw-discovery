@@ -177,7 +177,9 @@ pub enum Trigger {
         closing: String,
         escape: Option<String>,
     },
-    Whitespace,
+    Whitespace {
+        canonical_spelling: String,
+    },
     LineComment {
         opening: String,
     },
@@ -188,12 +190,20 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// The canonical emitted spelling, when this generic trigger owns one.
+    pub fn canonical_spelling(&self) -> Option<&str> {
+        match self {
+            Self::Whitespace { canonical_spelling } => Some(canonical_spelling),
+            _ => None,
+        }
+    }
+
     fn exact_spellings(&self) -> Vec<&str> {
         match self {
             Self::Boundary { opening, closing } => vec![opening, closing],
             Self::Application { glyph } | Self::Punctuation { glyph } => vec![glyph],
             Self::Carrier { .. }
-            | Self::Whitespace
+            | Self::Whitespace { .. }
             | Self::LineComment { .. }
             | Self::LeadingCharacterClass { .. } => Vec::new(),
         }
@@ -201,7 +211,7 @@ impl Trigger {
 
     fn character_classes(&self) -> Option<(&CharacterClass, &CharacterClass)> {
         match self {
-            Self::Whitespace => Some((&WHITESPACE_CLASS, &WHITESPACE_CLASS)),
+            Self::Whitespace { .. } => Some((&WHITESPACE_CLASS, &WHITESPACE_CLASS)),
             Self::LeadingCharacterClass {
                 leading,
                 continuation,
@@ -243,7 +253,10 @@ impl Trigger {
                 Ok(())
             }
             Self::LineComment { opening } => non_empty(opening, TriggerTextRole::TriviaOpening),
-            Self::LeadingCharacterClass { .. } | Self::Whitespace => Ok(()),
+            Self::Whitespace { canonical_spelling } => {
+                non_empty(canonical_spelling, TriggerTextRole::CanonicalSpelling)
+            }
+            Self::LeadingCharacterClass { .. } => Ok(()),
         }
     }
 }
@@ -339,7 +352,9 @@ impl TokenProfileData {
             },
             TriggerDefinition {
                 identifier: TriggerIdentifier::new(5),
-                trigger: Trigger::Whitespace,
+                trigger: Trigger::Whitespace {
+                    canonical_spelling: " ".to_owned(),
+                },
             },
             TriggerDefinition {
                 identifier: TriggerIdentifier::new(6),
@@ -366,14 +381,14 @@ impl TokenProfileData {
     }
 }
 
-/// Layout-1 contextual identity of sealed token-profile data.
+/// Layout-2 contextual identity of sealed token-profile data.
 pub struct TokenProfileDomain;
 
 impl HashDomain for TokenProfileDomain {
     fn separation() -> DomainSeparation {
         DomainSeparation::Contextual {
             context: "raw-discovery 2026 recursive token profile",
-            layout: LayoutVersion::new(1),
+            layout: LayoutVersion::new(2),
         }
     }
 }
@@ -625,6 +640,7 @@ pub enum TriggerTextRole {
     CarrierClosing,
     CarrierEscape,
     TriviaOpening,
+    CanonicalSpelling,
 }
 
 /// A profile or active trigger set could not be sealed or executed.

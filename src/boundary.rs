@@ -230,7 +230,7 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
                 closing,
                 escape,
             } => self.match_carrier(identifier, opening, closing, escape.as_deref()),
-            Trigger::Whitespace => Ok(self.match_character_class(
+            Trigger::Whitespace { .. } => Ok(self.match_character_class(
                 identifier,
                 TriggerMatchKind::Trivia,
                 &CharacterClass::Whitespace,

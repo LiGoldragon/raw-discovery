@@ -49,11 +49,13 @@ exactly one case, with `Symbol` as the catch-all.
 ## Profiles are sealed data, never runtime guessing
 
 `TokenProfileData` carries generic trigger definitions, a profile revision,
-the root trigger set, and the negative-space exclusions for bare atoms. Sealing
-validates every definition and active set, rejects equal complete matches, and
-pins the data under `TokenProfileDomain`. A new lexical rule therefore changes
-explicit versioned data and identity rather than reader code or a runtime
-heuristic.
+the root trigger set, and the negative-space exclusions for bare atoms. A
+whitespace trigger carries its nonempty canonical emitted spelling as
+identity-bearing data while recognition continues to match the generic
+whitespace class and its complete runs. Sealing validates every definition and
+active set, rejects equal complete matches, and pins the data under
+`TokenProfileDomain`. A new lexical rule therefore changes explicit versioned
+data and identity rather than reader code or a runtime heuristic.
 
 Selection is local to an expected structural position. A sealed form activates
 its trigger set at the current cursor, and the generic boundary reader chooses

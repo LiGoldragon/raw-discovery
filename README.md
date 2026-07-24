@@ -30,7 +30,9 @@ drags in any language model.
 ## Profiles are sealed, versioned data
 
 `TokenProfileData` gives generic boundary triggers compact identifiers and
-pins the complete profile under a contextual content identity. Structural
+pins the complete profile under a contextual content identity. Whitespace
+triggers retain a nonempty canonical emitted spelling as profile data while
+recognition accepts the generic whitespace class and its complete runs. Structural
 forms activate only the trigger set relevant to the current recursive
 position. The boundary reader applies universal longest-complete-match inside
 that active set; equal complete matches are rejected when the set seals.

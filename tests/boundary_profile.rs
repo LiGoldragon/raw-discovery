@@ -5,9 +5,9 @@ use raw_discovery::{
     TokenProfileError, Trigger, TriggerDefinition, TriggerIdentifier, TriggerMatchKind, TriggerSet,
 };
 
-const STANDARD_PROFILE_LAYOUT_ONE: [u8; 32] = [
-    0xe7, 0xd1, 0x44, 0xca, 0x2f, 0x96, 0x69, 0x6b, 0xdf, 0x3a, 0xd2, 0x3f, 0xe7, 0xd8, 0xa3, 0xb7,
-    0xa3, 0x75, 0x6b, 0x9f, 0x30, 0x76, 0x8d, 0x5c, 0x93, 0x64, 0x51, 0xd4, 0xd2, 0x5a, 0x7c, 0xd6,
+const STANDARD_PROFILE_LAYOUT_TWO: [u8; 32] = [
+    0x3d, 0x40, 0x2a, 0x87, 0xc6, 0x77, 0x83, 0xeb, 0x5d, 0x5d, 0xd8, 0x6f, 0xb7, 0x9f, 0xc5, 0x13,
+    0x0b, 0x23, 0xf0, 0xa1, 0x0d, 0x02, 0x9e, 0x2d, 0xaf, 0x12, 0x37, 0x61, 0x9c, 0xc3, 0x0d, 0x4f,
 ];
 
 fn definition(identifier: u16, trigger: Trigger) -> TriggerDefinition {
@@ -27,13 +27,93 @@ fn profile(definitions: Vec<TriggerDefinition>, active: &[u16]) -> TokenProfileD
 }
 
 #[test]
-fn standard_profile_identity_is_an_absolute_layout_one_lock() {
+fn standard_profile_identity_is_an_absolute_layout_two_lock() {
     let sealed = RawProfile::standard().seal().expect("standard seals");
     assert_eq!(
         sealed.identity().bytes(),
-        &STANDARD_PROFILE_LAYOUT_ONE,
+        &STANDARD_PROFILE_LAYOUT_TWO,
         "profile data or its layout moved"
     );
+}
+
+#[test]
+fn whitespace_canonical_spelling_is_nonempty_and_identity_bearing() {
+    let standard = RawProfile::standard().seal().expect("standard seals");
+    let standard_whitespace = standard
+        .definition(TriggerIdentifier::new(5))
+        .expect("standard whitespace definition");
+    assert_eq!(standard_whitespace.trigger.canonical_spelling(), Some(" "));
+    assert!(
+        standard_whitespace
+            .trigger
+            .canonical_spelling()
+            .is_some_and(|spelling| !spelling.is_empty())
+    );
+
+    let space = profile(
+        vec![definition(
+            0,
+            Trigger::Whitespace {
+                canonical_spelling: " ".to_owned(),
+            },
+        )],
+        &[0],
+    )
+    .seal()
+    .expect("space profile seals");
+    let tab = profile(
+        vec![definition(
+            0,
+            Trigger::Whitespace {
+                canonical_spelling: "\t".to_owned(),
+            },
+        )],
+        &[0],
+    )
+    .seal()
+    .expect("tab profile seals");
+    assert_ne!(space.identity(), tab.identity());
+
+    let empty = profile(
+        vec![definition(
+            0,
+            Trigger::Whitespace {
+                canonical_spelling: String::new(),
+            },
+        )],
+        &[0],
+    )
+    .seal();
+    assert!(matches!(
+        empty,
+        Err(TokenProfileError::EmptyTrigger {
+            identifier,
+            role: raw_discovery::TriggerTextRole::CanonicalSpelling,
+        }) if identifier == TriggerIdentifier::new(0)
+    ));
+}
+
+#[test]
+fn whitespace_matching_remains_class_driven_despite_its_canonical_spelling() {
+    let sealed = profile(
+        vec![definition(
+            0,
+            Trigger::Whitespace {
+                canonical_spelling: " ".to_owned(),
+            },
+        )],
+        &[0],
+    )
+    .seal()
+    .expect("profile seals");
+    let active = sealed.root_trigger_set();
+    let reader = BoundaryReader::new("\t\u{2003}tail", &sealed);
+    let matched = reader
+        .longest_match(&active)
+        .expect("matching succeeds")
+        .expect("whitespace run matches");
+    assert_eq!(matched.kind(), TriggerMatchKind::Trivia);
+    assert_eq!(matched.end(), "\t\u{2003}".len());
 }
 
 #[test]
@@ -260,7 +340,12 @@ fn bare_atoms_are_negative_space_between_active_triggers() {
                     glyph: "+".to_owned(),
                 },
             ),
-            definition(1, Trigger::Whitespace),
+            definition(
+                1,
+                Trigger::Whitespace {
+                    canonical_spelling: " ".to_owned(),
+                },
+            ),
         ],
         &[0, 1],
     )
@@ -296,7 +381,12 @@ fn carrier_matching_starts_only_on_its_complete_opening_prefix() {
                     escape: Some("\\".to_owned()),
                 },
             ),
-            definition(1, Trigger::Whitespace),
+            definition(
+                1,
+                Trigger::Whitespace {
+                    canonical_spelling: " ".to_owned(),
+                },
+            ),
         ],
         &[0, 1],
     )
