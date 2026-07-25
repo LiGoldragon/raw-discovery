@@ -328,24 +328,23 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         if !active.triggers().contains(&identifier) {
             return Err(TokenProfileError::InactiveBoundary { identifier });
         }
-        if !matches!(
-            self.profile.definition(identifier)?.trigger,
-            Trigger::Boundary { .. }
-        ) {
+        let Trigger::Boundary { opening, .. } = &self.profile.definition(identifier)?.trigger
+        else {
             return Err(TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(
                 identifier,
             ));
-        }
+        };
 
+        // Expectation selected this group form before boundary discovery began,
+        // so only its opening is active at this recursive state. Carriers and
+        // nested boundaries in `active` become active after the opener, while
+        // locating the matching close.
         let opening = self
-            .longest_match(active.active_triggers())?
-            .filter(|matched| {
-                matched.identifier == identifier
-                    && matches!(
-                        matched.kind,
-                        TriggerMatchKind::Boundary(BoundarySide::Opening)
-                    )
-            })
+            .exact_match(
+                identifier,
+                TriggerMatchKind::Boundary(BoundarySide::Opening),
+                opening,
+            )
             .ok_or(TokenProfileError::ExpectedBoundaryOpening {
                 identifier,
                 byte_offset: self.byte_offset,

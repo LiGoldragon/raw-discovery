@@ -81,6 +81,24 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
 }
 
 #[test]
+fn expected_group_opener_precedes_its_interior_discovery_context() {
+    let profile = profile();
+    let discovery = discovery(&profile);
+    let source = "(|literal|)tail";
+    let mut reader = BoundaryReader::new(source, &profile);
+
+    let outer = reader
+        .discover_delimited(PARENTHESIS, &discovery)
+        .expect("expectation activates the parenthesis opener before its interior set");
+
+    assert_eq!(
+        reader.source_between(outer.interior().start(), outer.interior().end()),
+        "|literal|"
+    );
+    assert_eq!(reader.remaining(), "tail");
+}
+
+#[test]
 fn same_boundary_nesting_is_balanced_before_recursion() {
     let profile = profile();
     let discovery = discovery(&profile);
