@@ -28,6 +28,21 @@ impl SourceBound {
         }
     }
 
+    pub fn checked(source: &str, start: usize, end: usize) -> Result<Self, TokenProfileError> {
+        if start > end
+            || end > source.len()
+            || !source.is_char_boundary(start)
+            || !source.is_char_boundary(end)
+        {
+            return Err(TokenProfileError::InvalidSourceBound {
+                start,
+                end,
+                source_length: source.len(),
+            });
+        }
+        Ok(Self { start, end })
+    }
+
     pub fn start(self) -> usize {
         self.start
     }
@@ -142,7 +157,12 @@ pub struct BoundaryReader<'source, 'profile> {
 
 impl<'source, 'profile> BoundaryReader<'source, 'profile> {
     pub fn new(source: &'source str, profile: &'profile SealedTokenProfile) -> Self {
-        Self::within(source, profile, SourceBound::whole(source))
+        Self {
+            source,
+            profile,
+            byte_offset: 0,
+            bound: SourceBound::whole(source),
+        }
     }
 
     /// Start a cursor at the beginning of one bound previously obtained from
@@ -151,20 +171,14 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         source: &'source str,
         profile: &'profile SealedTokenProfile,
         bound: SourceBound,
-    ) -> Self {
-        assert!(
-            bound.start <= bound.end
-                && bound.end <= source.len()
-                && source.is_char_boundary(bound.start)
-                && source.is_char_boundary(bound.end),
-            "boundary readers require a valid UTF-8 source bound"
-        );
-        Self {
+    ) -> Result<Self, TokenProfileError> {
+        let bound = SourceBound::checked(source, bound.start, bound.end)?;
+        Ok(Self {
             source,
             profile,
             byte_offset: bound.start,
             bound,
-        }
+        })
     }
 
     pub fn bound(&self) -> SourceBound {

@@ -10,6 +10,11 @@ const STANDARD_PROFILE_LAYOUT_TWO: [u8; 32] = [
     0x0b, 0x23, 0xf0, 0xa1, 0x0d, 0x02, 0x9e, 0x2d, 0xaf, 0x12, 0x37, 0x61, 0x9c, 0xc3, 0x0d, 0x4f,
 ];
 
+const EXHAUSTIVE_PROFILE_LAYOUT_TWO: [u8; 32] = [
+    0xfe, 0x70, 0x4d, 0xae, 0x7d, 0x6c, 0xce, 0x9a, 0x0e, 0x26, 0x1f, 0xcd, 0x70, 0xe7, 0x42, 0xbd,
+    0xb2, 0x49, 0x08, 0xe1, 0xc7, 0x4f, 0xb1, 0x98, 0x08, 0x26, 0x47, 0xab, 0x43, 0xcd, 0x78, 0xcd,
+];
+
 fn definition(identifier: u16, trigger: Trigger) -> TriggerDefinition {
     TriggerDefinition {
         identifier: TriggerIdentifier::new(identifier),
@@ -33,6 +38,82 @@ fn standard_profile_identity_is_an_absolute_layout_two_lock() {
         sealed.identity().bytes(),
         &STANDARD_PROFILE_LAYOUT_TWO,
         "profile data or its layout moved"
+    );
+}
+
+#[test]
+fn every_profile_and_character_class_variant_has_an_absolute_layout_two_lock() {
+    let sealed = profile(
+        vec![
+            definition(
+                0,
+                Trigger::Boundary {
+                    opening: "(".to_owned(),
+                    closing: ")".to_owned(),
+                },
+            ),
+            definition(
+                1,
+                Trigger::Application {
+                    glyph: ".".to_owned(),
+                },
+            ),
+            definition(
+                2,
+                Trigger::Punctuation {
+                    glyph: "=>".to_owned(),
+                },
+            ),
+            definition(
+                3,
+                Trigger::Carrier {
+                    opening: "r#\"".to_owned(),
+                    closing: "\"#".to_owned(),
+                    escape: Some("\\".to_owned()),
+                },
+            ),
+            definition(
+                4,
+                Trigger::Whitespace {
+                    canonical_spelling: " ".to_owned(),
+                },
+            ),
+            definition(
+                5,
+                Trigger::LineComment {
+                    opening: "//".to_owned(),
+                },
+            ),
+            definition(
+                6,
+                Trigger::LeadingCharacterClass {
+                    leading: CharacterClass::AsciiDigit,
+                    continuation: CharacterClass::AsciiAlphabetic,
+                },
+            ),
+            definition(
+                7,
+                Trigger::LeadingCharacterClass {
+                    leading: CharacterClass::AsciiAlphanumeric,
+                    continuation: CharacterClass::Whitespace,
+                },
+            ),
+            definition(
+                8,
+                Trigger::LeadingCharacterClass {
+                    leading: CharacterClass::Characters("_\u{00df}".to_owned()),
+                    continuation: CharacterClass::Characters("-_".to_owned()),
+                },
+            ),
+        ],
+        &[],
+    )
+    .seal()
+    .expect("exhaustive profile seals");
+    assert_eq!(
+        sealed.identity().bytes(),
+        &EXHAUSTIVE_PROFILE_LAYOUT_TWO,
+        "a token-profile or character-class archive variant moved"
     );
 }
 

@@ -3,7 +3,8 @@
 
 use raw_discovery::{
     BoundaryReader, BoundarySide, RawProfile, SealedBoundaryDiscoverySet, SealedTokenProfile,
-    SealedTriggerSet, TokenProfileError, TriggerIdentifier, TriggerMatchKind, TriggerSet,
+    SealedTriggerSet, SourceBound, TokenProfileData, TokenProfileError, Trigger, TriggerDefinition,
+    TriggerIdentifier, TriggerMatchKind, TriggerSet,
 };
 
 const PARENTHESIS: TriggerIdentifier = TriggerIdentifier::new(0);
@@ -63,7 +64,8 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
         "outer [inner (| ] ) } |)] tail"
     );
 
-    let mut interior = BoundaryReader::within(source, &profile, outer.interior());
+    let mut interior =
+        BoundaryReader::within(source, &profile, outer.interior()).expect("bounded interior");
     assert_eq!(
         interior.read_bare(&active).unwrap(),
         Some("outer".to_owned())
@@ -99,7 +101,7 @@ fn same_boundary_nesting_is_balanced_before_recursion() {
 fn carriers_are_opaque_while_the_enclosing_close_is_sought() {
     let profile = profile();
     let discovery = discovery(&profile);
-    let source = "{before (| } ] ) \u{00bb} |) after}tail";
+    let source = r#"{before (| } ] ) \|) still carried |) after}tail"#;
     let mut reader = BoundaryReader::new(source, &profile);
 
     let outer = reader
@@ -108,9 +110,68 @@ fn carriers_are_opaque_while_the_enclosing_close_is_sought() {
 
     assert_eq!(
         reader.source_between(outer.interior().start(), outer.interior().end()),
-        "before (| } ] ) \u{00bb} |) after"
+        r#"before (| } ] ) \|) still carried |) after"#
     );
     assert_eq!(reader.remaining(), "tail");
+}
+
+#[test]
+fn adjacent_same_glyph_closes_belong_to_distinct_recursive_levels() {
+    let boundary = TriggerIdentifier::new(0);
+    let shift = TriggerIdentifier::new(1);
+    let profile = TokenProfileData::new(
+        raw_discovery::ProfileRevision::new(9),
+        vec![
+            TriggerDefinition {
+                identifier: boundary,
+                trigger: Trigger::Boundary {
+                    opening: "<".to_owned(),
+                    closing: ">".to_owned(),
+                },
+            },
+            TriggerDefinition {
+                identifier: shift,
+                trigger: Trigger::Punctuation {
+                    glyph: ">>".to_owned(),
+                },
+            },
+        ],
+        TriggerSet::new(vec![boundary, shift]),
+        String::new(),
+    )
+    .seal()
+    .expect("angle profile seals");
+    let discovery = profile
+        .seal_boundary_discovery_set(TriggerSet::new(vec![boundary]))
+        .expect("only the expected boundary is active");
+    let ordinary = profile
+        .seal_trigger_set(TriggerSet::new(vec![boundary]))
+        .expect("boundary position");
+    let source = "<Inner<T>>tail";
+    let mut parent = BoundaryReader::new(source, &profile);
+    let outer = parent
+        .discover_delimited(boundary, &discovery)
+        .expect("outer angle boundary");
+    assert_eq!(
+        parent.source_between(outer.interior().start(), outer.interior().end()),
+        "Inner<T>"
+    );
+    assert_eq!(parent.remaining(), "tail");
+
+    let mut interior =
+        BoundaryReader::within(source, &profile, outer.interior()).expect("outer interior");
+    assert_eq!(
+        interior.read_bare(&ordinary).expect("head"),
+        Some("Inner".to_owned())
+    );
+    let inner = interior
+        .discover_delimited(boundary, &discovery)
+        .expect("inner angle boundary");
+    assert_eq!(
+        interior.source_between(inner.interior().start(), inner.interior().end()),
+        "T"
+    );
+    assert!(interior.is_end());
 }
 
 #[test]
@@ -154,7 +215,8 @@ fn an_interior_reader_cannot_observe_text_after_its_enclosing_close() {
     let outer = parent
         .discover_delimited(PARENTHESIS, &discovery)
         .expect("outer boundary");
-    let mut child = BoundaryReader::within(source, &profile, outer.interior());
+    let mut child =
+        BoundaryReader::within(source, &profile, outer.interior()).expect("bounded child");
 
     assert_eq!(child.read_bare(&active).unwrap(), Some("alpha".to_owned()));
     assert!(child.is_end());
@@ -173,6 +235,24 @@ fn horizontal_triggers_cannot_enter_a_boundary_discovery_set() {
         Err(TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(identifier))
             if identifier == APPLICATION
     ));
+}
+
+#[test]
+fn source_bounds_are_checked_at_utf8_character_boundaries() {
+    let profile = profile();
+    let source = "\u{00e9}tail";
+    assert!(matches!(
+        SourceBound::checked(source, 1, source.len()),
+        Err(TokenProfileError::InvalidSourceBound {
+            start: 1,
+            end,
+            source_length,
+        }) if end == source.len() && source_length == source.len()
+    ));
+
+    let bound = SourceBound::checked(source, 0, "\u{00e9}".len()).expect("whole first character");
+    let reader = BoundaryReader::within(source, &profile, bound).expect("checked UTF-8 range");
+    assert_eq!(reader.remaining(), "\u{00e9}");
 }
 
 #[test]

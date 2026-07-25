@@ -717,6 +717,14 @@ pub enum TokenProfileError {
     },
     #[error("active trigger set belongs to a different token profile")]
     TriggerSetProfileMismatch,
+    #[error(
+        "source bound [{start}, {end}) is not a UTF-8 range within source length {source_length}"
+    )]
+    InvalidSourceBound {
+        start: usize,
+        end: usize,
+        source_length: usize,
+    },
     #[error("trigger {0:?} cannot participate in outside-in boundary discovery")]
     UnsupportedBoundaryDiscoveryTrigger(TriggerIdentifier),
     #[error("boundary trigger {identifier:?} is not active for boundary discovery")]
