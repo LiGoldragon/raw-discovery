@@ -5,9 +5,77 @@
 //! boundary event, and recursively supplies the next position's set.
 
 use crate::profile::{
-    CharacterClass, SealedTokenProfile, SealedTriggerSet, TokenProfileError, Trigger,
-    TriggerIdentifier,
+    CharacterClass, SealedBoundaryDiscoverySet, SealedTokenProfile, SealedTriggerSet,
+    TokenProfileError, Trigger, TriggerIdentifier,
 };
+
+/// One validated half-open range within a source text.
+///
+/// Bounds are runtime cursor state, not archiveable structure or durable
+/// identity. A delimited discovery creates the interior bound; recursive
+/// readers consume only that bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceBound {
+    start: usize,
+    end: usize,
+}
+
+impl SourceBound {
+    pub fn whole(source: &str) -> Self {
+        Self {
+            start: 0,
+            end: source.len(),
+        }
+    }
+
+    pub fn start(self) -> usize {
+        self.start
+    }
+
+    pub fn end(self) -> usize {
+        self.end
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    fn between(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+}
+
+/// The outside boundary and explicitly bounded interior discovered before any
+/// child form is interpreted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DelimitedBoundary {
+    identifier: TriggerIdentifier,
+    opening: SourceBound,
+    interior: SourceBound,
+    closing: SourceBound,
+}
+
+impl DelimitedBoundary {
+    pub fn identifier(self) -> TriggerIdentifier {
+        self.identifier
+    }
+
+    pub fn opening(self) -> SourceBound {
+        self.opening
+    }
+
+    pub fn interior(self) -> SourceBound {
+        self.interior
+    }
+
+    pub fn closing(self) -> SourceBound {
+        self.closing
+    }
+
+    pub fn end(self) -> usize {
+        self.closing.end
+    }
+}
 
 /// The side of a configured boundary matched at the cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,15 +137,38 @@ pub struct BoundaryReader<'source, 'profile> {
     source: &'source str,
     profile: &'profile SealedTokenProfile,
     byte_offset: usize,
+    bound: SourceBound,
 }
 
 impl<'source, 'profile> BoundaryReader<'source, 'profile> {
     pub fn new(source: &'source str, profile: &'profile SealedTokenProfile) -> Self {
+        Self::within(source, profile, SourceBound::whole(source))
+    }
+
+    /// Start a cursor at the beginning of one bound previously obtained from
+    /// this source by generic boundary discovery.
+    pub fn within(
+        source: &'source str,
+        profile: &'profile SealedTokenProfile,
+        bound: SourceBound,
+    ) -> Self {
+        assert!(
+            bound.start <= bound.end
+                && bound.end <= source.len()
+                && source.is_char_boundary(bound.start)
+                && source.is_char_boundary(bound.end),
+            "boundary readers require a valid UTF-8 source bound"
+        );
         Self {
             source,
             profile,
-            byte_offset: 0,
+            byte_offset: bound.start,
+            bound,
         }
+    }
+
+    pub fn bound(&self) -> SourceBound {
+        self.bound
     }
 
     pub fn byte_offset(&self) -> usize {
@@ -85,21 +176,25 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
     }
 
     pub fn is_end(&self) -> bool {
-        self.byte_offset == self.source.len()
+        self.byte_offset == self.bound.end
     }
 
     pub fn remaining(&self) -> &'source str {
-        &self.source[self.byte_offset..]
+        &self.source[self.byte_offset..self.bound.end]
     }
 
     pub fn source_between(&self, start: usize, end: usize) -> &'source str {
+        assert!(
+            start >= self.bound.start && end <= self.bound.end && start <= end,
+            "source range must stay inside the reader bound"
+        );
         &self.source[start..end]
     }
 
     pub fn advance_to(&mut self, byte_offset: usize) {
         assert!(
             byte_offset >= self.byte_offset
-                && byte_offset <= self.source.len()
+                && byte_offset <= self.bound.end
                 && self.source.is_char_boundary(byte_offset),
             "boundary reader advances only to a later UTF-8 boundary"
         );
@@ -200,6 +295,107 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         Ok(Some(self.source[start..self.byte_offset].to_owned()))
     }
 
+    /// Discover one complete delimited region before interpreting any child.
+    ///
+    /// The reader must be positioned at the expected opening. The shared
+    /// machinery then walks glyph-by-glyph inside this reader's existing bound,
+    /// balancing every active nested boundary and consuming configured carriers
+    /// and trivia opaquely. On success the parent cursor advances past the
+    /// matching close and the returned interior is an independent bound for
+    /// recursive interpretation.
+    pub fn discover_delimited(
+        &mut self,
+        identifier: TriggerIdentifier,
+        active: &SealedBoundaryDiscoverySet,
+    ) -> Result<DelimitedBoundary, TokenProfileError> {
+        if active.profile_identity() != self.profile.identity() {
+            return Err(TokenProfileError::TriggerSetProfileMismatch);
+        }
+        if !active.triggers().contains(&identifier) {
+            return Err(TokenProfileError::InactiveBoundary { identifier });
+        }
+        if !matches!(
+            self.profile.definition(identifier)?.trigger,
+            Trigger::Boundary { .. }
+        ) {
+            return Err(TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(
+                identifier,
+            ));
+        }
+
+        let opening = self
+            .longest_match(active.active_triggers())?
+            .filter(|matched| {
+                matched.identifier == identifier
+                    && matches!(
+                        matched.kind,
+                        TriggerMatchKind::Boundary(BoundarySide::Opening)
+                    )
+            })
+            .ok_or(TokenProfileError::ExpectedBoundaryOpening {
+                identifier,
+                byte_offset: self.byte_offset,
+            })?;
+        self.advance_to(opening.end);
+        let interior_start = self.byte_offset;
+        let mut stack = vec![identifier];
+
+        loop {
+            if self.is_end() {
+                return Err(TokenProfileError::UnclosedBoundary {
+                    identifier,
+                    byte_offset: opening.start,
+                });
+            }
+
+            let Some(matched) = self.longest_match(active.active_triggers())? else {
+                self.advance_character()
+                    .expect("the bounded end condition was checked");
+                continue;
+            };
+
+            match matched.kind {
+                TriggerMatchKind::Boundary(BoundarySide::Opening) => {
+                    stack.push(matched.identifier);
+                    self.advance_to(matched.end);
+                }
+                TriggerMatchKind::Boundary(BoundarySide::Closing) => {
+                    let expected = *stack
+                        .last()
+                        .expect("the enclosing boundary remains on the stack");
+                    if matched.identifier != expected {
+                        return Err(TokenProfileError::MismatchedBoundary {
+                            expected,
+                            found: matched.identifier,
+                            byte_offset: matched.start,
+                        });
+                    }
+                    stack.pop();
+                    if stack.is_empty() {
+                        let interior = SourceBound::between(interior_start, matched.start);
+                        let result = DelimitedBoundary {
+                            identifier,
+                            opening: SourceBound::between(opening.start, opening.end),
+                            interior,
+                            closing: SourceBound::between(matched.start, matched.end),
+                        };
+                        self.advance_to(matched.end);
+                        return Ok(result);
+                    }
+                    self.advance_to(matched.end);
+                }
+                TriggerMatchKind::Carrier | TriggerMatchKind::Trivia => {
+                    self.advance_to(matched.end);
+                }
+                TriggerMatchKind::Application
+                | TriggerMatchKind::Punctuation
+                | TriggerMatchKind::LeadingCharacterClass => {
+                    unreachable!("a sealed boundary discovery set excludes horizontal triggers")
+                }
+            }
+        }
+    }
+
     fn match_trigger(
         &self,
         identifier: TriggerIdentifier,
@@ -243,7 +439,7 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
                 let end = self
                     .remaining()
                     .find('\n')
-                    .map_or(self.source.len(), |relative| {
+                    .map_or(self.bound.end, |relative| {
                         self.byte_offset + relative + '\n'.len_utf8()
                     });
                 Ok(Some(TriggerMatch {
@@ -293,8 +489,8 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         }
         let mut cursor = self.byte_offset + opening.len();
         let mut body = String::new();
-        while cursor < self.source.len() {
-            let remaining = &self.source[cursor..];
+        while cursor < self.bound.end {
+            let remaining = &self.source[cursor..self.bound.end];
             if remaining.starts_with(closing) {
                 return Ok(Some(TriggerMatch {
                     identifier,
@@ -307,7 +503,7 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
             if let Some(escape) = escape {
                 if remaining.starts_with(escape) {
                     cursor += escape.len();
-                    let Some(character) = self.source[cursor..].chars().next() else {
+                    let Some(character) = self.source[cursor..self.bound.end].chars().next() else {
                         body.push_str(escape);
                         break;
                     };

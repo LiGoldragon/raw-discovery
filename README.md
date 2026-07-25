@@ -42,7 +42,9 @@ Recognition is boundary-first and recursive. A group boundary is found while
 configured carriers and trivia are respected, and its interior is then read
 under the expected interior forms. The negative space between active triggers
 is a bare atom. No preliminary token stream or parallel annotation tree is
-constructed.
+constructed. `BoundaryReader::discover_delimited` performs that generic
+outside-in discovery and returns an explicit `SourceBound`; a recursive reader
+created within that bound cannot consume text belonging to its parent.
 
 `RawProfile` and `GlyphSet` remain compatibility selectors for the established
 NOTA profiles. Sealing either selector produces the same generic

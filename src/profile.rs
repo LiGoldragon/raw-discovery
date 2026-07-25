@@ -470,6 +470,35 @@ impl SealedTokenProfile {
         })
     }
 
+    /// Seal the subset of triggers that may participate while discovering an
+    /// enclosing boundary before its interior is interpreted.
+    ///
+    /// Boundary discovery is deliberately narrower than ordinary position
+    /// recognition: only nested boundaries, opaque carriers, and trivia may
+    /// affect where the enclosing close lies. Application, punctuation, and
+    /// leading-character-class triggers belong to later recursive states and
+    /// cannot influence this outside-in pass.
+    pub fn seal_boundary_discovery_set(
+        &self,
+        triggers: TriggerSet,
+    ) -> Result<SealedBoundaryDiscoverySet, TokenProfileError> {
+        let triggers = self.seal_trigger_set(triggers)?;
+        for identifier in triggers.triggers() {
+            if !matches!(
+                self.definition(*identifier)?.trigger,
+                Trigger::Boundary { .. }
+                    | Trigger::Carrier { .. }
+                    | Trigger::Whitespace { .. }
+                    | Trigger::LineComment { .. }
+            ) {
+                return Err(TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(
+                    *identifier,
+                ));
+            }
+        }
+        Ok(SealedBoundaryDiscoverySet { triggers })
+    }
+
     pub fn definition(
         &self,
         identifier: TriggerIdentifier,
@@ -631,6 +660,30 @@ impl SealedTriggerSet {
     }
 }
 
+/// A sealed active set restricted to generic outside-in boundary discovery.
+///
+/// This derived value is not archived and does not add another identity plane;
+/// its profile identity and universal ambiguity proof come from the wrapped
+/// [`SealedTriggerSet`].
+#[derive(Clone, Debug)]
+pub struct SealedBoundaryDiscoverySet {
+    triggers: SealedTriggerSet,
+}
+
+impl SealedBoundaryDiscoverySet {
+    pub fn profile_identity(&self) -> ContentHash<TokenProfileDomain> {
+        self.triggers.profile_identity()
+    }
+
+    pub fn triggers(&self) -> &[TriggerIdentifier] {
+        self.triggers.triggers()
+    }
+
+    pub(crate) fn active_triggers(&self) -> &SealedTriggerSet {
+        &self.triggers
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TriggerTextRole {
     BoundaryOpening,
@@ -664,6 +717,28 @@ pub enum TokenProfileError {
     },
     #[error("active trigger set belongs to a different token profile")]
     TriggerSetProfileMismatch,
+    #[error("trigger {0:?} cannot participate in outside-in boundary discovery")]
+    UnsupportedBoundaryDiscoveryTrigger(TriggerIdentifier),
+    #[error("boundary trigger {identifier:?} is not active for boundary discovery")]
+    InactiveBoundary { identifier: TriggerIdentifier },
+    #[error("expected opening boundary {identifier:?} at byte {byte_offset}")]
+    ExpectedBoundaryOpening {
+        identifier: TriggerIdentifier,
+        byte_offset: usize,
+    },
+    #[error("boundary {identifier:?} opened at byte {byte_offset} but no matching close was found")]
+    UnclosedBoundary {
+        identifier: TriggerIdentifier,
+        byte_offset: usize,
+    },
+    #[error(
+        "boundary {found:?} closed at byte {byte_offset} while boundary {expected:?} was active"
+    )]
+    MismatchedBoundary {
+        expected: TriggerIdentifier,
+        found: TriggerIdentifier,
+        byte_offset: usize,
+    },
     #[error("trigger {0:?} has no representation in the compatibility Block algebra")]
     UnsupportedCompatibilityTrigger(TriggerIdentifier),
     #[error("boundary trigger {0:?} has no compatibility Block delimiter")]

@@ -71,6 +71,14 @@ interior forms and trigger sets. Negative space between active triggers is bare
 text. No `LexicalToken` block, preliminary token stream, or parallel annotation
 tree exists.
 
+The shared `BoundaryReader` owns this mechanism. Boundary discovery accepts
+only a sealed set of boundary, carrier, and trivia triggers; horizontal
+application, punctuation, and leading-character-class triggers cannot enter
+that set. It balances nested active boundaries glyph-by-glyph, treats carrier
+interiors as opaque, advances the parent past the matching close, and returns a
+validated half-open interior bound. Child readers are constructed within that
+bound, so no failed child can consume or inspect text in its parent.
+
 `RawProfile` and `GlyphSet` remain compatibility selectors for the established
 NOTA profiles. They seal into the same generic profile representation. Two
 readers that disagree about lexical rules disagree by content identity.
