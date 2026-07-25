@@ -13,7 +13,7 @@ name = "raw_discovery"
 path = "src/lib.rs"
 
 [dependencies]
-content-identity = { git = "https://github.com/LiGoldragon/content-identity.git", rev = "076a48954b0cdb416b6aca1203da811e2146a731" }
+content-identity = { git = "https://github.com/LiGoldragon/content-identity.git", rev = "ac0075842799b3ece8909ad0eb4b8a92b596b188" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 thiserror = "2"
 
