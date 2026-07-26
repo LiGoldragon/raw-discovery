@@ -1,15 +1,16 @@
-//! Runtime-only, source-bounded block discovery.
+//! Source-bounded block discovery.
 //!
 //! This module converts a single outside-in boundary traversal into untyped
-//! source bounds. Boundary activation and prefix attachment are supplied as
-//! runtime data; this module does not interpret the bounded content.
+//! source bounds. Its context, transition, and prefix rules are archiveable
+//! canonical data; sealing binds them to one token profile. The resulting tree
+//! and its source bounds remain runtime-only.
 
 use thiserror::Error;
 
 use crate::{
     BoundaryDiscoveryConfiguration, BoundaryDiscoveryError, CharacterClass,
-    DiscoveredDelimitedBoundary, SealedTokenProfile, SourceBound, TokenProfileError,
-    TriggerIdentifier,
+    DiscoveredDelimitedBoundary, SealedBoundaryDiscoveryConfiguration, SealedTokenProfile,
+    SourceBound, TokenProfileError, Trigger, TriggerIdentifier,
 };
 
 /// One opening boundary recorded as a block cue.
@@ -34,8 +35,8 @@ impl BlockCue {
     }
 }
 
-/// Explicit runtime data for one prefix spelling.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Canonical rule data for one prefix spelling.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BlockPrefixRule {
     separator: String,
     word_characters: CharacterClass,
@@ -59,7 +60,7 @@ impl BlockPrefixRule {
 }
 
 /// One prefix rule attached to an opening boundary declaration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BlockPrefixAttachment {
     boundary: TriggerIdentifier,
     rule: BlockPrefixRule,
@@ -98,8 +99,11 @@ impl BlockPrefix {
     }
 }
 
-/// Runtime rule data for a source-bounded block tree.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Canonical archiveable rule data for a source-bounded block tree.
+///
+/// The configuration itself carries no source bounds. [`Self::seal`] validates
+/// it against one exact [`SealedTokenProfile`] before it can drive discovery.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BlockTreeDiscoveryConfiguration {
     boundaries: BoundaryDiscoveryConfiguration,
     prefixes: Vec<BlockPrefixAttachment>,
@@ -108,8 +112,9 @@ pub struct BlockTreeDiscoveryConfiguration {
 impl BlockTreeDiscoveryConfiguration {
     pub fn new(
         boundaries: BoundaryDiscoveryConfiguration,
-        prefixes: Vec<BlockPrefixAttachment>,
+        mut prefixes: Vec<BlockPrefixAttachment>,
     ) -> Self {
+        prefixes.sort_unstable_by_key(BlockPrefixAttachment::boundary);
         Self {
             boundaries,
             prefixes,
@@ -124,30 +129,84 @@ impl BlockTreeDiscoveryConfiguration {
         &self.prefixes
     }
 
-    fn validate(&self) -> Result<(), BlockDiscoveryError> {
-        for (index, prefix) in self.prefixes.iter().enumerate() {
+    /// Bind this canonical rule data to `profile` after validating every
+    /// reference and every pass-1 restriction.
+    pub fn seal(
+        &self,
+        profile: &SealedTokenProfile,
+    ) -> Result<SealedBlockTreeDiscoveryConfiguration, BlockDiscoveryError> {
+        let boundaries = self.boundaries.seal(profile)?;
+        let mut prefix_boundaries: Vec<_> = self
+            .prefixes
+            .iter()
+            .map(BlockPrefixAttachment::boundary)
+            .collect();
+        prefix_boundaries.sort_unstable();
+        if let Some(&boundary) = prefix_boundaries
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(&pair[0]))
+        {
+            return Err(BlockDiscoveryError::DuplicatePrefixRule { boundary });
+        }
+        if !self
+            .prefixes
+            .windows(2)
+            .all(|pair| pair[0].boundary() < pair[1].boundary())
+        {
+            return Err(BlockDiscoveryError::NoncanonicalPrefixOrder);
+        }
+        for prefix in &self.prefixes {
             if prefix.rule.separator.is_empty() {
                 return Err(BlockDiscoveryError::EmptyPrefixSeparator {
                     boundary: prefix.boundary,
                 });
             }
-            if self.prefixes[..index]
-                .iter()
-                .any(|prior| prior.boundary == prefix.boundary)
-            {
-                return Err(BlockDiscoveryError::DuplicatePrefixRule {
+            if !prefix.rule.word_characters.is_canonical() {
+                return Err(BlockDiscoveryError::NoncanonicalPrefixAlphabet {
+                    boundary: prefix.boundary,
+                });
+            }
+            if !matches!(
+                profile.definition(prefix.boundary)?.trigger,
+                Trigger::Boundary { .. }
+            ) {
+                return Err(BlockDiscoveryError::PrefixRequiresBoundary {
+                    trigger: prefix.boundary,
+                });
+            }
+            if !boundaries.configures_boundary(prefix.boundary) {
+                return Err(BlockDiscoveryError::UnconfiguredPrefixBoundary {
                     boundary: prefix.boundary,
                 });
             }
         }
-        Ok(())
+        Ok(SealedBlockTreeDiscoveryConfiguration {
+            boundaries,
+            prefixes: self.prefixes.clone(),
+        })
+    }
+}
+
+/// Runtime rule data proven against one exact token profile.
+///
+/// This derived value intentionally has no archive representation: its active
+/// discovery sets are bound to the profile identity supplied at sealing time.
+#[derive(Clone, Debug)]
+pub struct SealedBlockTreeDiscoveryConfiguration {
+    boundaries: SealedBoundaryDiscoveryConfiguration,
+    prefixes: Vec<BlockPrefixAttachment>,
+}
+
+impl SealedBlockTreeDiscoveryConfiguration {
+    fn matches_profile(&self, profile: &SealedTokenProfile) -> bool {
+        self.boundaries.matches_profile(profile)
     }
 
     fn prefix_rule(&self, boundary: TriggerIdentifier) -> Option<&BlockPrefixRule> {
         self.prefixes
-            .iter()
-            .find(|prefix| prefix.boundary == boundary)
-            .map(BlockPrefixAttachment::rule)
+            .binary_search_by_key(&boundary, BlockPrefixAttachment::boundary)
+            .ok()
+            .map(|index| self.prefixes[index].rule())
     }
 }
 
@@ -231,12 +290,13 @@ impl DiscoveredBlockTree {
     pub fn discover(
         source: &str,
         profile: &SealedTokenProfile,
-        configuration: &BlockTreeDiscoveryConfiguration,
+        configuration: &SealedBlockTreeDiscoveryConfiguration,
     ) -> Result<Self, BlockDiscoveryError> {
-        configuration.validate()?;
-        let boundaries = configuration.boundaries.seal(profile)?;
+        if !configuration.matches_profile(profile) {
+            return Err(TokenProfileError::TriggerSetProfileMismatch.into());
+        }
         let mut reader = crate::BoundaryReader::new(source, profile);
-        let discovered = reader.discover_boundary_children(&boundaries)?;
+        let discovered = reader.discover_boundary_children(&configuration.boundaries)?;
         let root_bound = SourceBound::whole(source);
         let root_blocks = discovered
             .iter()
@@ -258,7 +318,7 @@ impl DiscoveredBlock {
         source: &str,
         containing_bound: SourceBound,
         discovered: &DiscoveredDelimitedBoundary,
-        configuration: &BlockTreeDiscoveryConfiguration,
+        configuration: &SealedBlockTreeDiscoveryConfiguration,
     ) -> Result<Self, BlockDiscoveryError> {
         let boundary = discovered.boundary();
         let prefix = configuration
@@ -336,4 +396,115 @@ pub enum BlockDiscoveryError {
 
     #[error("boundary {boundary:?} has more than one prefix rule")]
     DuplicatePrefixRule { boundary: TriggerIdentifier },
+
+    #[error("block-prefix rules are not in canonical boundary order")]
+    NoncanonicalPrefixOrder,
+
+    #[error("prefix alphabet for boundary {boundary:?} is not canonical")]
+    NoncanonicalPrefixAlphabet { boundary: TriggerIdentifier },
+
+    #[error("trigger {trigger:?} cannot carry a block-prefix rule")]
+    PrefixRequiresBoundary { trigger: TriggerIdentifier },
+
+    #[error("prefix rule for boundary {boundary:?} is not active in any discovery context")]
+    UnconfiguredPrefixBoundary { boundary: TriggerIdentifier },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BlockDiscoveryError, BlockPrefixAttachment, BlockPrefixRule,
+        BlockTreeDiscoveryConfiguration,
+    };
+    use crate::{
+        BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext,
+        BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryTransition, CharacterClass,
+        CharacterSet, RawProfile, TriggerIdentifier, TriggerSet,
+    };
+
+    fn archive_round_trip(
+        configuration: &BlockTreeDiscoveryConfiguration,
+    ) -> BlockTreeDiscoveryConfiguration {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(configuration)
+            .expect("archive block-tree configuration");
+        rkyv::from_bytes::<BlockTreeDiscoveryConfiguration, rkyv::rancor::Error>(&bytes)
+            .expect("validated block-tree configuration archive")
+    }
+
+    #[test]
+    fn archived_noncanonical_prefix_order_and_alphabet_refuse() {
+        let profile = RawProfile::standard().seal().expect("standard profile");
+        let root = BoundaryDiscoveryContextIdentifier::new(95);
+        let parenthesis = TriggerIdentifier::new(0);
+        let square = TriggerIdentifier::new(1);
+        let two_boundaries = BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![parenthesis, square]),
+            )],
+            vec![
+                BoundaryDiscoveryTransition::new(root, parenthesis, root),
+                BoundaryDiscoveryTransition::new(root, square, root),
+            ],
+        );
+        let reordered = BlockTreeDiscoveryConfiguration {
+            boundaries: two_boundaries,
+            prefixes: vec![
+                BlockPrefixAttachment::new(
+                    square,
+                    BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+                ),
+                BlockPrefixAttachment::new(
+                    parenthesis,
+                    BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+                ),
+            ],
+        };
+        let reordered = archive_round_trip(&reordered);
+        assert!(matches!(
+            reordered.seal(&profile),
+            Err(BlockDiscoveryError::NoncanonicalPrefixOrder)
+        ));
+
+        let one_boundary = BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![parenthesis]),
+            )],
+            vec![BoundaryDiscoveryTransition::new(root, parenthesis, root)],
+        );
+        let noncanonical_alphabet = BlockTreeDiscoveryConfiguration {
+            boundaries: one_boundary.clone(),
+            prefixes: vec![BlockPrefixAttachment::new(
+                parenthesis,
+                BlockPrefixRule::new(
+                    ".",
+                    CharacterClass::Characters(CharacterSet::from_unchecked_for_test(vec![
+                        'z', 'a', 'z',
+                    ])),
+                ),
+            )],
+        };
+        let noncanonical_alphabet = archive_round_trip(&noncanonical_alphabet);
+        assert!(matches!(
+            noncanonical_alphabet.seal(&profile),
+            Err(BlockDiscoveryError::NoncanonicalPrefixAlphabet { boundary })
+                if boundary == parenthesis
+        ));
+
+        let empty_separator = BlockTreeDiscoveryConfiguration {
+            boundaries: one_boundary,
+            prefixes: vec![BlockPrefixAttachment::new(
+                parenthesis,
+                BlockPrefixRule::new("", CharacterClass::AsciiAlphabetic),
+            )],
+        };
+        let empty_separator = archive_round_trip(&empty_separator);
+        assert!(matches!(
+            empty_separator.seal(&profile),
+            Err(BlockDiscoveryError::EmptyPrefixSeparator { boundary }) if boundary == parenthesis
+        ));
+    }
 }

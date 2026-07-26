@@ -2,6 +2,7 @@
 //! boundary discovery; typed parsing and archived `Block` compatibility stay
 //! outside this surface.
 
+use content_identity::PortableArchive;
 use raw_discovery::{
     BlockDiscoveryError, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
     BlockTreeDiscoveryConfiguration, BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext,
@@ -65,7 +66,10 @@ fn protos_configuration() -> BlockTreeDiscoveryConfiguration {
 
 fn discover(source: &str) -> raw_discovery::DiscoveredBlockTree {
     let profile = RawProfile::standard().seal().expect("standard profile");
-    raw_discovery::DiscoveredBlockTree::discover(source, &profile, &protos_configuration())
+    let configuration = protos_configuration()
+        .seal(&profile)
+        .expect("protos block discovery configuration");
+    raw_discovery::DiscoveredBlockTree::discover(source, &profile, &configuration)
         .expect("block tree")
 }
 
@@ -80,6 +84,359 @@ fn projections<T: BlockTree>(block: &T) {
     let _ = block.content_bound();
     let _ = block.closing_bound();
     let _ = block.children();
+}
+
+#[test]
+fn discovery_rules_are_canonical_archiveable_and_order_independent_when_sealed() {
+    let profile = RawProfile::standard().seal().expect("standard profile");
+    let root = context(70);
+    let child = context(71);
+    let root_triggers = TriggerSet::new(vec![PARENTHESIS, SQUARE, PIPE_TEXT, WHITESPACE]);
+    let child_triggers = TriggerSet::new(vec![PARENTHESIS, PIPE_TEXT, WHITESPACE]);
+    let contexts = vec![
+        BoundaryDiscoveryContext::new(root, root_triggers),
+        BoundaryDiscoveryContext::new(child, child_triggers),
+    ];
+    let transitions = vec![
+        BoundaryDiscoveryTransition::new(root, PARENTHESIS, child),
+        BoundaryDiscoveryTransition::new(root, SQUARE, child),
+        BoundaryDiscoveryTransition::new(child, PARENTHESIS, child),
+    ];
+    let prefixes = vec![
+        BlockPrefixAttachment::new(
+            PARENTHESIS,
+            BlockPrefixRule::new(".", CharacterClass::AsciiAlphanumeric),
+        ),
+        BlockPrefixAttachment::new(
+            SQUARE,
+            BlockPrefixRule::new(".", CharacterClass::AsciiAlphanumeric),
+        ),
+    ];
+    let canonical = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(root, contexts.clone(), transitions.clone()),
+        prefixes.clone(),
+    );
+    let reordered = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![contexts[1].clone(), contexts[0].clone()],
+            vec![transitions[2], transitions[1], transitions[0]],
+        ),
+        vec![prefixes[1].clone(), prefixes[0].clone()],
+    );
+
+    assert_eq!(
+        canonical, reordered,
+        "rule vectors normalize at construction"
+    );
+    let canonical_bytes = canonical
+        .to_archive_bytes()
+        .expect("archive canonical rules");
+    let reordered_bytes = reordered
+        .to_archive_bytes()
+        .expect("archive reordered rules");
+    assert_eq!(
+        canonical_bytes.as_ref(),
+        reordered_bytes.as_ref(),
+        "canonical archive bytes do not retain rule-vector order"
+    );
+    let restored = rkyv::from_bytes::<BlockTreeDiscoveryConfiguration, rkyv::rancor::Error>(
+        canonical_bytes.as_ref(),
+    )
+    .expect("archive bytes validate and deserialize");
+    assert_eq!(
+        restored, canonical,
+        "archive round trip preserves rule data"
+    );
+
+    let canonical = canonical.seal(&profile).expect("canonical rules seal");
+    let restored = restored.seal(&profile).expect("restored rules seal");
+    let source = "Head.( [nested] )";
+    assert_eq!(
+        raw_discovery::DiscoveredBlockTree::discover(source, &profile, &canonical)
+            .expect("canonical tree"),
+        raw_discovery::DiscoveredBlockTree::discover(source, &profile, &restored)
+            .expect("restored tree"),
+        "sealing does not use declaration order as precedence"
+    );
+}
+
+#[test]
+fn discovery_rule_sealing_refuses_duplicate_contexts_transitions_and_prefix_rules() {
+    let profile = RawProfile::standard().seal().expect("standard profile");
+    let root = context(72);
+    let child = context(73);
+
+    let duplicate_contexts = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(Vec::new())),
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(Vec::new())),
+            ],
+            Vec::new(),
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        duplicate_contexts.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::DuplicateContext { context }))
+            if context == root
+    ));
+
+    let duplicate_transitions = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PARENTHESIS])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            vec![
+                BoundaryDiscoveryTransition::new(root, PARENTHESIS, child),
+                BoundaryDiscoveryTransition::new(root, PARENTHESIS, child),
+            ],
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        duplicate_transitions.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::DuplicateTransition {
+            context,
+            boundary,
+        })) if context == root && boundary == PARENTHESIS
+    ));
+
+    let duplicate_prefixes = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PARENTHESIS])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, child)],
+        ),
+        vec![
+            BlockPrefixAttachment::new(
+                PARENTHESIS,
+                BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+            ),
+            BlockPrefixAttachment::new(
+                PARENTHESIS,
+                BlockPrefixRule::new("::", CharacterClass::AsciiAlphabetic),
+            ),
+        ],
+    );
+    assert!(matches!(
+        duplicate_prefixes.seal(&profile),
+        Err(BlockDiscoveryError::DuplicatePrefixRule { boundary }) if boundary == PARENTHESIS
+    ));
+}
+
+#[test]
+fn discovery_rule_sealing_refuses_dangling_contexts_and_trigger_ids() {
+    let profile = RawProfile::standard().seal().expect("standard profile");
+    let root = context(74);
+    let missing = context(75);
+    let unknown = TriggerIdentifier::new(99);
+
+    let dangling_root = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            missing,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(Vec::new()),
+            )],
+            Vec::new(),
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        dangling_root.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::UnknownContext { context }))
+            if context == missing
+    ));
+
+    let dangling_child = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![PARENTHESIS]),
+            )],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, missing)],
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        dangling_child.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::UnknownContext { context }))
+            if context == missing
+    ));
+
+    let dangling_context_trigger = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![unknown]),
+            )],
+            Vec::new(),
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        dangling_context_trigger.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::Profile(
+            TokenProfileError::UnknownTriggerIdentifier(identifier)
+        ))) if identifier == unknown
+    ));
+
+    let dangling_prefix_trigger = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PARENTHESIS])),
+                BoundaryDiscoveryContext::new(missing, TriggerSet::new(Vec::new())),
+            ],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, missing)],
+        ),
+        vec![BlockPrefixAttachment::new(
+            unknown,
+            BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+        )],
+    );
+    assert!(matches!(
+        dangling_prefix_trigger.seal(&profile),
+        Err(BlockDiscoveryError::Profile(TokenProfileError::UnknownTriggerIdentifier(identifier)))
+            if identifier == unknown
+    ));
+}
+
+#[test]
+fn discovery_rule_sealing_refuses_non_discovery_and_non_boundary_rules() {
+    let profile = RawProfile::standard().seal().expect("standard profile");
+    let root = context(76);
+    let child = context(77);
+    let application = TriggerIdentifier::new(3);
+
+    let horizontal_context = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![application]),
+            )],
+            Vec::new(),
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        horizontal_context.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::Profile(
+            TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(identifier)
+        ))) if identifier == application
+    ));
+
+    let carrier_transition = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PIPE_TEXT])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            vec![BoundaryDiscoveryTransition::new(root, PIPE_TEXT, child)],
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        carrier_transition.seal(&profile),
+        Err(BlockDiscoveryError::Boundary(
+            BoundaryDiscoveryError::TransitionRequiresBoundary { context, trigger }
+        )) if context == root && trigger == PIPE_TEXT
+    ));
+
+    let non_boundary_prefix = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PARENTHESIS])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, child)],
+        ),
+        vec![BlockPrefixAttachment::new(
+            PIPE_TEXT,
+            BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+        )],
+    );
+    assert!(matches!(
+        non_boundary_prefix.seal(&profile),
+        Err(BlockDiscoveryError::PrefixRequiresBoundary { trigger }) if trigger == PIPE_TEXT
+    ));
+
+    let unconfigured_prefix = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PARENTHESIS])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, child)],
+        ),
+        vec![BlockPrefixAttachment::new(
+            SQUARE,
+            BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
+        )],
+    );
+    assert!(matches!(
+        unconfigured_prefix.seal(&profile),
+        Err(BlockDiscoveryError::UnconfiguredPrefixBoundary { boundary }) if boundary == SQUARE
+    ));
+}
+
+#[test]
+fn discovery_rule_sealing_refuses_missing_transitions_and_wrong_profile_use() {
+    let standard = RawProfile::standard().seal().expect("standard profile");
+    let nomos = RawProfile::nomos_extended().seal().expect("nomos profile");
+    let root = context(78);
+    let missing_transition = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![PARENTHESIS]),
+            )],
+            Vec::new(),
+        ),
+        Vec::new(),
+    );
+    assert!(matches!(
+        missing_transition.seal(&standard),
+        Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::MissingChildContext {
+            context,
+            boundary,
+        })) if context == root && boundary == PARENTHESIS
+    ));
+
+    let configuration = BlockTreeDiscoveryConfiguration::new(
+        BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(vec![PARENTHESIS]),
+            )],
+            vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, root)],
+        ),
+        Vec::new(),
+    )
+    .seal(&standard)
+    .expect("standard-bound configuration");
+    assert!(matches!(
+        raw_discovery::DiscoveredBlockTree::discover("", &nomos, &configuration),
+        Err(BlockDiscoveryError::Profile(
+            TokenProfileError::TriggerSetProfileMismatch
+        ))
+    ));
 }
 
 #[test]
@@ -147,7 +504,9 @@ fn carriers_and_comments_remain_opaque_to_block_discovery() {
 #[test]
 fn mismatched_and_unclosed_boundaries_refuse_before_child_discovery() {
     let profile = RawProfile::standard().seal().expect("standard profile");
-    let configuration = protos_configuration();
+    let configuration = protos_configuration()
+        .seal(&profile)
+        .expect("protos block discovery configuration");
 
     assert!(matches!(
         raw_discovery::DiscoveredBlockTree::discover("(outer[inner) ]", &profile, &configuration),
@@ -205,6 +564,9 @@ fn every_boundary_family_admitted_by_its_context_is_discovered() {
         ),
         Vec::new(),
     );
+    let configuration = configuration
+        .seal(&profile)
+        .expect("configured angle boundaries");
     let source = "<outer «inner»>";
     let tree = raw_discovery::DiscoveredBlockTree::discover(source, &profile, &configuration)
         .expect("tree");
@@ -262,6 +624,9 @@ fn child_contexts_activate_non_root_declared_boundaries() {
         ),
         Vec::new(),
     );
+    let configuration = configuration
+        .seal(&profile)
+        .expect("configured child boundaries");
 
     let tree = raw_discovery::DiscoveredBlockTree::discover("<[inner]>", &profile, &configuration)
         .expect("child context activates its declared boundary");
@@ -289,7 +654,7 @@ fn a_declared_child_boundary_cannot_be_silently_ignored() {
     );
 
     assert!(matches!(
-        raw_discovery::DiscoveredBlockTree::discover("([inner])", &profile, &configuration),
+        configuration.seal(&profile),
         Err(BlockDiscoveryError::Boundary(BoundaryDiscoveryError::MissingChildContext {
             context,
             boundary,
@@ -298,7 +663,7 @@ fn a_declared_child_boundary_cannot_be_silently_ignored() {
 }
 
 #[test]
-fn alternate_prefix_alphabet_is_runtime_rule_data() {
+fn alternate_prefix_alphabet_is_explicit_rule_data() {
     let boundary = TriggerIdentifier::new(40);
     let profile = TokenProfileData::new(
         ProfileRevision::new(32),
@@ -332,6 +697,9 @@ fn alternate_prefix_alphabet_is_runtime_rule_data() {
             ),
         )],
     );
+    let configuration = configuration
+        .seal(&profile)
+        .expect("configured alternate prefix");
     let source = "α::(body)";
     let tree = raw_discovery::DiscoveredBlockTree::discover(source, &profile, &configuration)
         .expect("alternate prefix rule");
@@ -408,6 +776,9 @@ fn horizontal_application_punctuation_and_token_triggers_do_not_enter_discovery(
         ),
         Vec::new(),
     );
+    let configuration = configuration
+        .seal(&profile)
+        .expect("configured nested boundaries");
     let tree = raw_discovery::DiscoveredBlockTree::discover("<<inner>>", &profile, &configuration)
         .expect("two closing boundaries still balance");
     let outer = tree.root_blocks().first().expect("outer block");

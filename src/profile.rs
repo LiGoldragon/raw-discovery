@@ -135,6 +135,15 @@ impl CharacterSet {
         &self.characters
     }
 
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.characters.windows(2).all(|pair| pair[0] < pair[1])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_unchecked_for_test(characters: Vec<char>) -> Self {
+        Self { characters }
+    }
+
     fn contains(&self, character: char) -> bool {
         self.characters.binary_search(&character).is_ok()
     }
@@ -158,6 +167,16 @@ impl CharacterClass {
             Self::AsciiAlphanumeric => character.is_ascii_alphanumeric(),
             Self::Whitespace => character.is_whitespace(),
             Self::Characters(characters) => characters.contains(character),
+        }
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        match self {
+            Self::Characters(characters) => characters.is_canonical(),
+            Self::AsciiDigit
+            | Self::AsciiAlphabetic
+            | Self::AsciiAlphanumeric
+            | Self::Whitespace => true,
         }
     }
 
@@ -322,6 +341,15 @@ impl TriggerSet {
 
     pub fn triggers(&self) -> &[TriggerIdentifier] {
         &self.triggers
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.triggers.windows(2).all(|pair| pair[0] < pair[1])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_unchecked_for_test(triggers: Vec<TriggerIdentifier>) -> Self {
+        Self { triggers }
     }
 }
 

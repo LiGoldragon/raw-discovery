@@ -50,6 +50,7 @@ pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
 pub use block_tree::{
     BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
     BlockTreeDiscoveryConfiguration, DiscoveredBlock, DiscoveredBlockTree,
+    SealedBlockTreeDiscoveryConfiguration,
 };
 pub use boundary::{
     BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext, BoundaryDiscoveryContextIdentifier,

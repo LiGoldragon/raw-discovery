@@ -4,9 +4,11 @@
 //! trigger set for its current expected structural position, consumes one
 //! boundary event, and recursively supplies the next position's set.
 
+use content_identity::ContentHash;
+
 use crate::profile::{
     CharacterClass, SealedBoundaryDiscoverySet, SealedTokenProfile, SealedTriggerSet,
-    TokenProfileError, Trigger, TriggerIdentifier, TriggerSet,
+    TokenProfileDomain, TokenProfileError, Trigger, TriggerIdentifier, TriggerSet,
 };
 use thiserror::Error;
 
@@ -93,11 +95,24 @@ impl DelimitedBoundary {
     }
 }
 
-/// Runtime identity of one boundary-discovery context.
+/// Canonical identity of one boundary-discovery context.
 ///
 /// A context selects the boundary, carrier, and trivia rules active at one
-/// source level. It is not profile or archive data.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// source level. It is archived rule data; sealing binds it to one exact token
+/// profile before discovery can use it.
+#[derive(
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
 pub struct BoundaryDiscoveryContextIdentifier(u16);
 
 impl BoundaryDiscoveryContextIdentifier {
@@ -111,7 +126,7 @@ impl BoundaryDiscoveryContextIdentifier {
 }
 
 /// One context's declared outside-in discovery triggers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BoundaryDiscoveryContext {
     identifier: BoundaryDiscoveryContextIdentifier,
     triggers: TriggerSet,
@@ -135,7 +150,7 @@ impl BoundaryDiscoveryContext {
 }
 
 /// A boundary-specific transition to the context governing its interior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BoundaryDiscoveryTransition {
     context: BoundaryDiscoveryContextIdentifier,
     boundary: TriggerIdentifier,
@@ -168,11 +183,14 @@ impl BoundaryDiscoveryTransition {
     }
 }
 
-/// Runtime rule data for context-specific outside-in boundary discovery.
+/// Canonical rule data for context-specific outside-in boundary discovery.
 ///
 /// The root context governs top-level source. Each active boundary has an
 /// explicit transition to the context used to find and record its children.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Construction normalizes context and transition order. Sealing rejects an
+/// archived value that bypassed those constructors with noncanonical nested
+/// trigger, context, or transition ordering.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BoundaryDiscoveryConfiguration {
     root: BoundaryDiscoveryContextIdentifier,
     contexts: Vec<BoundaryDiscoveryContext>,
@@ -182,9 +200,17 @@ pub struct BoundaryDiscoveryConfiguration {
 impl BoundaryDiscoveryConfiguration {
     pub fn new(
         root: BoundaryDiscoveryContextIdentifier,
-        contexts: Vec<BoundaryDiscoveryContext>,
-        transitions: Vec<BoundaryDiscoveryTransition>,
+        mut contexts: Vec<BoundaryDiscoveryContext>,
+        mut transitions: Vec<BoundaryDiscoveryTransition>,
     ) -> Self {
+        contexts.sort_unstable_by_key(BoundaryDiscoveryContext::identifier);
+        transitions.sort_unstable_by_key(|transition| {
+            (
+                transition.context(),
+                transition.boundary(),
+                transition.child_context(),
+            )
+        });
         Self {
             root,
             contexts,
@@ -208,18 +234,61 @@ impl BoundaryDiscoveryConfiguration {
         &self,
         profile: &SealedTokenProfile,
     ) -> Result<SealedBoundaryDiscoveryConfiguration, BoundaryDiscoveryError> {
-        let mut contexts = Vec::with_capacity(self.contexts.len());
+        let mut context_identifiers: Vec<_> = self
+            .contexts
+            .iter()
+            .map(BoundaryDiscoveryContext::identifier)
+            .collect();
+        context_identifiers.sort_unstable();
+        if let Some(&context) = context_identifiers
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(&pair[0]))
+        {
+            return Err(BoundaryDiscoveryError::DuplicateContext { context });
+        }
+        if !self
+            .contexts
+            .windows(2)
+            .all(|pair| pair[0].identifier() < pair[1].identifier())
+        {
+            return Err(BoundaryDiscoveryError::NoncanonicalContextOrder);
+        }
         for context in &self.contexts {
-            if contexts
-                .iter()
-                .any(|sealed: &SealedBoundaryDiscoveryContext| {
-                    sealed.identifier == context.identifier
-                })
-            {
-                return Err(BoundaryDiscoveryError::DuplicateContext {
+            if !context.triggers.is_canonical() {
+                return Err(BoundaryDiscoveryError::NoncanonicalContextTriggerSet {
                     context: context.identifier,
                 });
             }
+        }
+
+        let mut transition_keys: Vec<_> = self
+            .transitions
+            .iter()
+            .map(|transition| (transition.context(), transition.boundary()))
+            .collect();
+        transition_keys.sort_unstable();
+        if let Some(&(context, boundary)) = transition_keys
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(&pair[0]))
+        {
+            return Err(BoundaryDiscoveryError::DuplicateTransition { context, boundary });
+        }
+        if !self.transitions.windows(2).all(|pair| {
+            (
+                pair[0].context(),
+                pair[0].boundary(),
+                pair[0].child_context(),
+            ) < (
+                pair[1].context(),
+                pair[1].boundary(),
+                pair[1].child_context(),
+            )
+        }) {
+            return Err(BoundaryDiscoveryError::NoncanonicalTransitionOrder);
+        }
+
+        let mut contexts = Vec::with_capacity(self.contexts.len());
+        for context in &self.contexts {
             contexts.push(SealedBoundaryDiscoveryContext {
                 identifier: context.identifier,
                 active: profile.seal_boundary_discovery_set(context.triggers.clone())?,
@@ -229,20 +298,13 @@ impl BoundaryDiscoveryConfiguration {
             root: self.root,
             contexts,
             transitions: self.transitions.clone(),
+            profile_identity: profile.identity(),
         };
         sealed.context(self.root)?;
 
-        for (index, transition) in sealed.transitions.iter().enumerate() {
+        for transition in &sealed.transitions {
             let parent = sealed.context(transition.context)?;
             sealed.context(transition.child_context)?;
-            if sealed.transitions[..index].iter().any(|other| {
-                other.context == transition.context && other.boundary == transition.boundary
-            }) {
-                return Err(BoundaryDiscoveryError::DuplicateTransition {
-                    context: transition.context,
-                    boundary: transition.boundary,
-                });
-            }
             if !parent.active.triggers().contains(&transition.boundary) {
                 return Err(BoundaryDiscoveryError::InactiveTransitionBoundary {
                     context: transition.context,
@@ -284,6 +346,7 @@ pub struct SealedBoundaryDiscoveryConfiguration {
     root: BoundaryDiscoveryContextIdentifier,
     contexts: Vec<SealedBoundaryDiscoveryContext>,
     transitions: Vec<BoundaryDiscoveryTransition>,
+    profile_identity: ContentHash<TokenProfileDomain>,
 }
 
 impl SealedBoundaryDiscoveryConfiguration {
@@ -313,6 +376,16 @@ impl SealedBoundaryDiscoveryConfiguration {
             .find(|transition| transition.context == context && transition.boundary == boundary)
             .map(|transition| transition.child_context())
             .ok_or(BoundaryDiscoveryError::MissingChildContext { context, boundary })
+    }
+
+    pub(crate) fn configures_boundary(&self, boundary: TriggerIdentifier) -> bool {
+        self.contexts
+            .iter()
+            .any(|context| context.active.triggers().contains(&boundary))
+    }
+
+    pub(crate) fn matches_profile(&self, profile: &SealedTokenProfile) -> bool {
+        self.profile_identity == profile.identity()
     }
 }
 
@@ -350,6 +423,14 @@ pub enum BoundaryDiscoveryError {
         context: BoundaryDiscoveryContextIdentifier,
     },
 
+    #[error("boundary discovery contexts are not in canonical identifier order")]
+    NoncanonicalContextOrder,
+
+    #[error("boundary discovery trigger set for {context:?} is not canonical")]
+    NoncanonicalContextTriggerSet {
+        context: BoundaryDiscoveryContextIdentifier,
+    },
+
     #[error("boundary discovery context {context:?} is not declared")]
     UnknownContext {
         context: BoundaryDiscoveryContextIdentifier,
@@ -360,6 +441,9 @@ pub enum BoundaryDiscoveryError {
         context: BoundaryDiscoveryContextIdentifier,
         boundary: TriggerIdentifier,
     },
+
+    #[error("boundary discovery transitions are not in canonical order")]
+    NoncanonicalTransitionOrder,
 
     #[error("boundary {boundary:?} is not active in context {context:?}")]
     InactiveTransitionBoundary {
@@ -690,6 +774,9 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         &mut self,
         configuration: &SealedBoundaryDiscoveryConfiguration,
     ) -> Result<Vec<DiscoveredDelimitedBoundary>, BoundaryDiscoveryError> {
+        if !configuration.matches_profile(self.profile) {
+            return Err(TokenProfileError::TriggerSetProfileMismatch.into());
+        }
         let traversal = BoundaryTraversal::Configured {
             configuration,
             context: configuration.root(),
@@ -1037,9 +1124,19 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
 mod tests {
     use super::{
         BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext,
-        BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryTransition, BoundaryReader,
+        BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryError, BoundaryDiscoveryTransition,
+        BoundaryReader,
     };
-    use crate::{RawProfile, TriggerIdentifier, TriggerSet};
+    use crate::{RawProfile, TokenProfileError, TriggerIdentifier, TriggerSet};
+
+    fn archive_round_trip(
+        configuration: &BoundaryDiscoveryConfiguration,
+    ) -> BoundaryDiscoveryConfiguration {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(configuration)
+            .expect("archive boundary configuration");
+        rkyv::from_bytes::<BoundaryDiscoveryConfiguration, rkyv::rancor::Error>(&bytes)
+            .expect("validated boundary configuration archive")
+    }
 
     #[test]
     fn configured_tree_enters_each_nested_boundary_once() {
@@ -1080,5 +1177,109 @@ mod tests {
             reader.boundary_entries, 2,
             "the traversal enters the outer and inner boundaries once each"
         );
+    }
+
+    #[test]
+    fn archived_noncanonical_context_sets_refuse_before_profile_use() {
+        let profile = RawProfile::standard().seal().expect("standard profile");
+        let root = BoundaryDiscoveryContextIdentifier::new(92);
+        let parenthesis = TriggerIdentifier::new(0);
+        let square = TriggerIdentifier::new(1);
+
+        let reordered = BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::from_unchecked_for_test(vec![square, parenthesis]),
+            )],
+            vec![
+                BoundaryDiscoveryTransition::new(root, parenthesis, root),
+                BoundaryDiscoveryTransition::new(root, square, root),
+            ],
+        );
+        let reordered = archive_round_trip(&reordered);
+        assert!(matches!(
+            reordered.seal(&profile),
+            Err(BoundaryDiscoveryError::NoncanonicalContextTriggerSet { context }) if context == root
+        ));
+
+        let duplicated = BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::from_unchecked_for_test(vec![parenthesis, parenthesis]),
+            )],
+            vec![BoundaryDiscoveryTransition::new(root, parenthesis, root)],
+        );
+        let duplicated = archive_round_trip(&duplicated);
+        assert!(matches!(
+            duplicated.seal(&profile),
+            Err(BoundaryDiscoveryError::NoncanonicalContextTriggerSet { context }) if context == root
+        ));
+    }
+
+    #[test]
+    fn archived_noncanonical_context_and_transition_order_refuse() {
+        let profile = RawProfile::standard().seal().expect("standard profile");
+        let root = BoundaryDiscoveryContextIdentifier::new(93);
+        let child = BoundaryDiscoveryContextIdentifier::new(94);
+        let parenthesis = TriggerIdentifier::new(0);
+        let square = TriggerIdentifier::new(1);
+
+        let reordered_contexts = BoundaryDiscoveryConfiguration {
+            root,
+            contexts: vec![
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(Vec::new())),
+            ],
+            transitions: Vec::new(),
+        };
+        let reordered_contexts = archive_round_trip(&reordered_contexts);
+        assert!(matches!(
+            reordered_contexts.seal(&profile),
+            Err(BoundaryDiscoveryError::NoncanonicalContextOrder)
+        ));
+
+        let reordered_transitions = BoundaryDiscoveryConfiguration {
+            root,
+            contexts: vec![
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![parenthesis, square])),
+                BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
+            ],
+            transitions: vec![
+                BoundaryDiscoveryTransition::new(root, square, child),
+                BoundaryDiscoveryTransition::new(root, parenthesis, child),
+            ],
+        };
+        let reordered_transitions = archive_round_trip(&reordered_transitions);
+        assert!(matches!(
+            reordered_transitions.seal(&profile),
+            Err(BoundaryDiscoveryError::NoncanonicalTransitionOrder)
+        ));
+    }
+
+    #[test]
+    fn configured_discovery_refuses_a_wrong_profile_before_empty_source_succeeds() {
+        let standard = RawProfile::standard().seal().expect("standard profile");
+        let nomos = RawProfile::nomos_extended().seal().expect("nomos profile");
+        let root = BoundaryDiscoveryContextIdentifier::new(96);
+        let configuration = BoundaryDiscoveryConfiguration::new(
+            root,
+            vec![BoundaryDiscoveryContext::new(
+                root,
+                TriggerSet::new(Vec::new()),
+            )],
+            Vec::new(),
+        )
+        .seal(&standard)
+        .expect("standard-bound configuration");
+        let mut reader = BoundaryReader::new("", &nomos);
+
+        assert!(matches!(
+            reader.discover_boundary_children(&configuration),
+            Err(BoundaryDiscoveryError::Profile(
+                TokenProfileError::TriggerSetProfileMismatch
+            ))
+        ));
     }
 }
