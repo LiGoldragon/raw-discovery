@@ -537,4 +537,41 @@ mod tests {
             Err(BlockDiscoveryError::EmptyPrefixSeparator { boundary }) if boundary == parenthesis
         ));
     }
+
+    #[test]
+    fn sealed_context_accessors_preserve_active_set_and_transition() {
+        let profile = RawProfile::standard().seal().expect("standard profile");
+        let root = BoundaryDiscoveryContextIdentifier::new(97);
+        let child = BoundaryDiscoveryContextIdentifier::new(98);
+        let parenthesis = TriggerIdentifier::new(0);
+        let pipe = TriggerIdentifier::new(4);
+        let configuration = BlockTreeDiscoveryConfiguration::new(
+            BoundaryDiscoveryConfiguration::new(
+                root,
+                vec![
+                    BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![parenthesis])),
+                    BoundaryDiscoveryContext::new(child, TriggerSet::new(vec![pipe])),
+                ],
+                vec![BoundaryDiscoveryTransition::new(root, parenthesis, child)],
+            ),
+            vec![],
+        )
+        .seal(&profile)
+        .expect("sealed contexts");
+
+        assert_eq!(configuration.root_context(), root);
+        assert_eq!(
+            configuration
+                .child_context(root, parenthesis)
+                .expect("declared transition"),
+            child
+        );
+        assert_eq!(
+            configuration
+                .active_triggers(child)
+                .expect("child active set")
+                .triggers(),
+            &[pipe]
+        );
+    }
 }
