@@ -366,7 +366,7 @@ impl SealedBoundaryDiscoveryConfiguration {
             })
     }
 
-    fn child_context(
+    pub(crate) fn child_context(
         &self,
         context: BoundaryDiscoveryContextIdentifier,
         boundary: TriggerIdentifier,
@@ -376,6 +376,13 @@ impl SealedBoundaryDiscoveryConfiguration {
             .find(|transition| transition.context == context && transition.boundary == boundary)
             .map(|transition| transition.child_context())
             .ok_or(BoundaryDiscoveryError::MissingChildContext { context, boundary })
+    }
+
+    pub(crate) fn active_triggers(
+        &self,
+        context: BoundaryDiscoveryContextIdentifier,
+    ) -> Result<&SealedTriggerSet, BoundaryDiscoveryError> {
+        Ok(self.context(context)?.active.active_triggers())
     }
 
     pub(crate) fn configures_boundary(&self, boundary: TriggerIdentifier) -> bool {

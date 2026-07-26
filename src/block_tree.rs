@@ -8,9 +8,10 @@
 use thiserror::Error;
 
 use crate::{
-    BoundaryDiscoveryConfiguration, BoundaryDiscoveryError, CharacterClass,
-    DiscoveredDelimitedBoundary, SealedBoundaryDiscoveryConfiguration, SealedTokenProfile,
-    SourceBound, TokenProfileError, Trigger, TriggerIdentifier,
+    BoundaryDiscoveryConfiguration, BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryError,
+    CharacterClass, DiscoveredDelimitedBoundary, SealedBoundaryDiscoveryConfiguration,
+    SealedTokenProfile, SealedTriggerSet, SourceBound, TokenProfileError, Trigger,
+    TriggerIdentifier,
 };
 
 /// One opening boundary recorded as a block cue.
@@ -207,6 +208,35 @@ impl SealedBlockTreeDiscoveryConfiguration {
             .binary_search_by_key(&boundary, BlockPrefixAttachment::boundary)
             .ok()
             .map(|index| self.prefixes[index].rule())
+    }
+
+    /// The configured root context for source at the outermost level.
+    pub fn root_context(&self) -> BoundaryDiscoveryContextIdentifier {
+        self.boundaries.root()
+    }
+
+    /// The exact, profile-sealed discovery triggers admitted at one context.
+    ///
+    /// Consumers that interpret already-discovered source use this instead of
+    /// flattening trigger sets across recursive contexts. The returned set is
+    /// the same one the boundary reader validated while building the tree.
+    pub fn active_triggers(
+        &self,
+        context: BoundaryDiscoveryContextIdentifier,
+    ) -> Result<&SealedTriggerSet, BoundaryDiscoveryError> {
+        self.boundaries.active_triggers(context)
+    }
+
+    /// The context governing the interior of `boundary` opened at `context`.
+    ///
+    /// This is a validated transition from the sealed discovery configuration;
+    /// callers cannot infer it from trigger ordering or a global default.
+    pub fn child_context(
+        &self,
+        context: BoundaryDiscoveryContextIdentifier,
+        boundary: TriggerIdentifier,
+    ) -> Result<BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryError> {
+        self.boundaries.child_context(context, boundary)
     }
 }
 
