@@ -10,7 +10,7 @@
 
 use crate::block::{Atom, Block, Delimiter, PipeText};
 use crate::boundary::{BoundaryReader, BoundarySide, TriggerMatch, TriggerMatchKind};
-use crate::error::{RecognizeError, SourcePosition};
+use crate::error::{FoundClose, RecognizeError, SourcePosition};
 use crate::profile::{RawProfile, SealedTokenProfile, SealedTriggerSet, TokenProfileError};
 
 /// The raw-structure entry point. Carries the versioned profile it recognizes
@@ -183,7 +183,7 @@ impl<'source> SourceReading<'source> {
                     TriggerMatchKind::Boundary(BoundarySide::Closing)
                 ) {
                     return Err(RecognizeError::UnexpectedClose {
-                        found: self.peek().unwrap_or('?'),
+                        found: self.found_close(),
                         position: self.cursor.position(),
                     });
                 }
@@ -192,7 +192,7 @@ impl<'source> SourceReading<'source> {
                 && Delimiter::from_closing(character).is_some()
             {
                 return Err(RecognizeError::UnexpectedClose {
-                    found: character,
+                    found: FoundClose::Glyph(character),
                     position: self.cursor.position(),
                 });
             }
@@ -258,7 +258,7 @@ impl<'source> SourceReading<'source> {
                 ) =>
             {
                 Err(RecognizeError::UnexpectedClose {
-                    found: self.peek().unwrap_or('?'),
+                    found: self.found_close(),
                     position: self.cursor.position(),
                 })
             }
@@ -273,7 +273,7 @@ impl<'source> SourceReading<'source> {
             // malformed input.
             None if self.peek() == Some('|') && self.at_pipe_close() => {
                 Err(RecognizeError::UnexpectedClose {
-                    found: self.peek_next().unwrap_or('|'),
+                    found: self.found_pipe_close(),
                     position: self.cursor.position(),
                 })
             }
@@ -327,7 +327,7 @@ impl<'source> SourceReading<'source> {
                     });
                 }
                 return Err(RecognizeError::UnexpectedClose {
-                    found: character,
+                    found: FoundClose::Glyph(character),
                     position: self.cursor.position(),
                 });
             }
@@ -357,7 +357,19 @@ impl<'source> SourceReading<'source> {
     }
 
     fn at_pipe_close(&self) -> bool {
-        self.peek() == Some('|') && self.peek_next() == Some(')')
+        self.peek() == Some('|') && matches!(self.found_pipe_close(), FoundClose::Glyph(')'))
+    }
+
+    fn found_close(&self) -> FoundClose {
+        self.peek()
+            .map(FoundClose::Glyph)
+            .unwrap_or(FoundClose::EndOfInput)
+    }
+
+    fn found_pipe_close(&self) -> FoundClose {
+        self.peek_next()
+            .map(FoundClose::Glyph)
+            .unwrap_or(FoundClose::EndOfInput)
     }
 
     fn skip_spacing(&mut self) -> Result<(), RecognizeError> {

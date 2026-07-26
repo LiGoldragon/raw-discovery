@@ -3,7 +3,7 @@
 //! Span/reemit assertions are dropped: the recognized tree is span-free by
 //! design, so structure is asserted directly.
 
-use raw_discovery::{Delimiter, RecognizeError, Recognizer};
+use raw_discovery::{Delimiter, FoundClose, RecognizeError, Recognizer};
 
 #[test]
 fn parses_ordered_root_objects_in_source_order() {
@@ -108,6 +108,9 @@ fn reports_unexpected_close_with_source_position() {
         .expect_err("stray close is rejected");
     assert!(matches!(
         error,
-        RecognizeError::UnexpectedClose { found: ']', .. }
+        RecognizeError::UnexpectedClose {
+            found: FoundClose::Glyph(']'),
+            ..
+        }
     ));
 }

@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::block::Delimiter;
 use crate::profile::TokenProfileError;
+use std::fmt;
 
 /// A byte-and-line position in the recognized source. Carried by
 /// [`RecognizeError`] alone.
@@ -21,6 +22,22 @@ pub struct SourcePosition {
     pub column: usize,
 }
 
+/// The evidence available when recognition reaches a closing position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FoundClose {
+    Glyph(char),
+    EndOfInput,
+}
+
+impl fmt::Display for FoundClose {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Glyph(glyph) => write!(formatter, "`{glyph}`"),
+            Self::EndOfInput => formatter.write_str("end of input"),
+        }
+    }
+}
+
 /// Every way raw recognition can reject a source. The recognizer discovers
 /// structure and never classifies meaning, so every variant here is a
 /// *structural* fault — an unbalanced delimiter, a dangling dot-application, or
@@ -29,9 +46,9 @@ pub struct SourcePosition {
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum RecognizeError {
     /// A closing delimiter appeared with no matching opener at this position.
-    #[error("unexpected closing delimiter `{found}` at {}:{}", .position.line, .position.column)]
+    #[error("unexpected closing delimiter {found} at {}:{}", .position.line, .position.column)]
     UnexpectedClose {
-        found: char,
+        found: FoundClose,
         position: SourcePosition,
     },
 

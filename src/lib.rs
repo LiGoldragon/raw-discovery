@@ -49,7 +49,7 @@ pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
 pub use boundary::{
     BoundaryReader, BoundarySide, DelimitedBoundary, SourceBound, TriggerMatch, TriggerMatchKind,
 };
-pub use error::{RecognizeError, SourcePosition};
+pub use error::{FoundClose, RecognizeError, SourcePosition};
 pub use profile::{
     CharacterClass, GlyphSet, ProfileRevision, RawProfile, SealedBoundaryDiscoverySet,
     SealedTokenProfile, SealedTriggerSet, TokenProfileData, TokenProfileDomain, TokenProfileError,

@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use raw_discovery::Recognizer;
+use raw_discovery::{FoundClose, RecognizeError, Recognizer};
 
 fn recognition_terminates(input: &str) -> bool {
     let owned = input.to_string();
@@ -36,4 +36,28 @@ fn recognition_terminates_on_stray_pipe_close() {
             "recognition did not terminate on {input:?}"
         );
     }
+}
+
+#[test]
+fn pipe_close_evidence_distinguishes_end_of_input_from_a_closing_glyph() {
+    let truncated = Recognizer::standard()
+        .recognize("|")
+        .expect("a bare pipe at end of input remains an atom");
+    assert_eq!(
+        truncated
+            .root_object_at(0)
+            .and_then(|block| block.demote_to_string()),
+        Some("|")
+    );
+
+    let error = Recognizer::standard()
+        .recognize("|)")
+        .expect_err("a stray pipe close is rejected");
+    assert!(matches!(
+        error,
+        RecognizeError::UnexpectedClose {
+            found: FoundClose::Glyph(')'),
+            ..
+        }
+    ));
 }
