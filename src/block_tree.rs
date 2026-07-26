@@ -448,8 +448,8 @@ mod tests {
     };
     use crate::{
         BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext,
-        BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryTransition, CharacterClass,
-        CharacterSet, RawProfile, TriggerIdentifier, TriggerSet,
+        BoundaryDiscoveryContextIdentifier, BoundaryDiscoveryError, BoundaryDiscoveryTransition,
+        CharacterClass, CharacterSet, RawProfile, TriggerIdentifier, TriggerSet,
     };
 
     fn archive_round_trip(
@@ -573,5 +573,17 @@ mod tests {
                 .triggers(),
             &[pipe]
         );
+
+        let unknown = BoundaryDiscoveryContextIdentifier::new(99);
+        assert!(matches!(
+            configuration.active_triggers(unknown),
+            Err(BoundaryDiscoveryError::UnknownContext { context }) if context == unknown
+        ));
+        let undeclared = TriggerIdentifier::new(1);
+        assert!(matches!(
+            configuration.child_context(root, undeclared),
+            Err(BoundaryDiscoveryError::MissingChildContext { context, boundary })
+                if context == root && boundary == undeclared
+        ));
     }
 }
