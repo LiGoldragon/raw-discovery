@@ -1,7 +1,7 @@
 //! Laws of the sealed, cursor-local boundary profile.
 
 use raw_discovery::{
-    BoundaryReader, CharacterClass, ProfileRevision, RawProfile, TokenProfileData,
+    BoundaryReader, CharacterClass, CharacterSet, ProfileRevision, RawProfile, TokenProfileData,
     TokenProfileError, Trigger, TriggerDefinition, TriggerIdentifier, TriggerMatchKind, TriggerSet,
 };
 
@@ -10,9 +10,19 @@ const STANDARD_PROFILE_LAYOUT_TWO: [u8; 32] = [
     0x0b, 0x23, 0xf0, 0xa1, 0x0d, 0x02, 0x9e, 0x2d, 0xaf, 0x12, 0x37, 0x61, 0x9c, 0xc3, 0x0d, 0x4f,
 ];
 
+const STANDARD_PROFILE_LAYOUT_THREE: [u8; 32] = [
+    0x0e, 0xd2, 0xcb, 0x68, 0x06, 0xf7, 0xd3, 0xf4, 0xbc, 0x54, 0x9f, 0x22, 0xc0, 0x6d, 0x81, 0x13,
+    0x95, 0x2a, 0x0d, 0xfc, 0x70, 0x29, 0x23, 0x7a, 0x2e, 0xfa, 0xca, 0x6e, 0xf5, 0x9b, 0x73, 0x28,
+];
+
 const EXHAUSTIVE_PROFILE_LAYOUT_TWO: [u8; 32] = [
     0xfe, 0x70, 0x4d, 0xae, 0x7d, 0x6c, 0xce, 0x9a, 0x0e, 0x26, 0x1f, 0xcd, 0x70, 0xe7, 0x42, 0xbd,
     0xb2, 0x49, 0x08, 0xe1, 0xc7, 0x4f, 0xb1, 0x98, 0x08, 0x26, 0x47, 0xab, 0x43, 0xcd, 0x78, 0xcd,
+];
+
+const EXHAUSTIVE_PROFILE_LAYOUT_THREE: [u8; 32] = [
+    0xc2, 0x9d, 0x3f, 0xab, 0x10, 0x1c, 0x77, 0x66, 0xc2, 0xb7, 0x38, 0xbb, 0x34, 0x93, 0xea, 0x5a,
+    0x89, 0xac, 0xde, 0xba, 0x01, 0xe1, 0x7f, 0x7c, 0xd0, 0xe7, 0xa1, 0xa9, 0x0a, 0xf3, 0x2f, 0x81,
 ];
 
 fn definition(identifier: u16, trigger: Trigger) -> TriggerDefinition {
@@ -27,22 +37,32 @@ fn profile(definitions: Vec<TriggerDefinition>, active: &[u16]) -> TokenProfileD
         ProfileRevision::new(1),
         definitions,
         TriggerSet::new(active.iter().copied().map(TriggerIdentifier::new).collect()),
-        "\"".to_owned(),
+        CharacterSet::from_text("\""),
     )
 }
 
 #[test]
-fn standard_profile_identity_is_an_absolute_layout_two_lock() {
+fn standard_profile_identity_is_an_absolute_layout_three_lock() {
     let sealed = RawProfile::standard().seal().expect("standard seals");
-    assert_eq!(
+    assert_ne!(
         sealed.identity().bytes(),
         &STANDARD_PROFILE_LAYOUT_TWO,
+        "layout three must replace the layout-two identity"
+    );
+    assert_ne!(
+        sealed.identity().bytes(),
+        &[0; 32],
+        "sealed profiles must derive an identity"
+    );
+    assert_eq!(
+        sealed.identity().bytes(),
+        &STANDARD_PROFILE_LAYOUT_THREE,
         "profile data or its layout moved"
     );
 }
 
 #[test]
-fn every_profile_and_character_class_variant_has_an_absolute_layout_two_lock() {
+fn every_profile_and_character_class_variant_has_an_absolute_layout_three_lock() {
     let sealed = profile(
         vec![
             definition(
@@ -101,8 +121,8 @@ fn every_profile_and_character_class_variant_has_an_absolute_layout_two_lock() {
             definition(
                 8,
                 Trigger::LeadingCharacterClass {
-                    leading: CharacterClass::Characters("_\u{00df}".to_owned()),
-                    continuation: CharacterClass::Characters("-_".to_owned()),
+                    leading: CharacterClass::Characters(CharacterSet::from_text("_\u{00df}")),
+                    continuation: CharacterClass::Characters(CharacterSet::from_text("-_")),
                 },
             ),
         ],
@@ -110,11 +130,56 @@ fn every_profile_and_character_class_variant_has_an_absolute_layout_two_lock() {
     )
     .seal()
     .expect("exhaustive profile seals");
-    assert_eq!(
+    assert_ne!(
         sealed.identity().bytes(),
         &EXHAUSTIVE_PROFILE_LAYOUT_TWO,
+        "layout three must replace the layout-two identity"
+    );
+    assert_ne!(
+        sealed.identity().bytes(),
+        &[0; 32],
+        "sealed profiles must derive an identity"
+    );
+    assert_eq!(
+        sealed.identity().bytes(),
+        &EXHAUSTIVE_PROFILE_LAYOUT_THREE,
         "a token-profile or character-class archive variant moved"
     );
+}
+
+#[test]
+fn character_sets_normalize_order_and_duplicates_before_identity() {
+    let reordered = CharacterSet::new(['\u{00df}', '_', '-', '_']);
+    let canonical = CharacterSet::new(['-', '_', '\u{00df}']);
+    assert_eq!(reordered, canonical);
+    assert_eq!(reordered.characters(), &['-', '_', '\u{00df}']);
+
+    let reordered_profile = profile(
+        vec![definition(
+            0,
+            Trigger::LeadingCharacterClass {
+                leading: CharacterClass::Characters(reordered),
+                continuation: CharacterClass::AsciiAlphanumeric,
+            },
+        )],
+        &[],
+    )
+    .seal()
+    .expect("reordered profile seals");
+    let canonical_profile = profile(
+        vec![definition(
+            0,
+            Trigger::LeadingCharacterClass {
+                leading: CharacterClass::Characters(canonical),
+                continuation: CharacterClass::AsciiAlphanumeric,
+            },
+        )],
+        &[],
+    )
+    .seal()
+    .expect("canonical profile seals");
+
+    assert_eq!(reordered_profile.identity(), canonical_profile.identity());
 }
 
 #[test]

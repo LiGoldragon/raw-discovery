@@ -110,6 +110,36 @@ impl TriggerIdentifier {
     }
 }
 
+/// A canonical set of Unicode scalar values.
+///
+/// Its private storage is sorted and deduplicated, so each set has one archive
+/// and identity representation.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct CharacterSet {
+    characters: Vec<char>,
+}
+
+impl CharacterSet {
+    pub fn new(characters: impl IntoIterator<Item = char>) -> Self {
+        let mut characters: Vec<char> = characters.into_iter().collect();
+        characters.sort_unstable();
+        characters.dedup();
+        Self { characters }
+    }
+
+    pub fn from_text(text: &str) -> Self {
+        Self::new(text.chars())
+    }
+
+    pub fn characters(&self) -> &[char] {
+        &self.characters
+    }
+
+    fn contains(&self, character: char) -> bool {
+        self.characters.binary_search(&character).is_ok()
+    }
+}
+
 /// A character class used by cursor-local trigger matching.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub enum CharacterClass {
@@ -117,7 +147,7 @@ pub enum CharacterClass {
     AsciiAlphabetic,
     AsciiAlphanumeric,
     Whitespace,
-    Characters(String),
+    Characters(CharacterSet),
 }
 
 impl CharacterClass {
@@ -133,11 +163,17 @@ impl CharacterClass {
 
     fn overlaps(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Characters(left), Self::Characters(right)) => {
-                left.chars().any(|character| right.contains(character))
-            }
+            (Self::Characters(left), Self::Characters(right)) => left
+                .characters()
+                .iter()
+                .copied()
+                .any(|character| right.contains(character)),
             (Self::Characters(characters), class) | (class, Self::Characters(characters)) => {
-                characters.chars().any(|character| class.matches(character))
+                characters
+                    .characters()
+                    .iter()
+                    .copied()
+                    .any(|character| class.matches(character))
             }
             (Self::AsciiDigit, Self::AsciiDigit)
             | (Self::AsciiDigit, Self::AsciiAlphanumeric)
@@ -295,7 +331,7 @@ pub struct TokenProfileData {
     revision: ProfileRevision,
     definitions: Vec<TriggerDefinition>,
     root_triggers: TriggerSet,
-    forbidden_bare_characters: String,
+    forbidden_bare_characters: CharacterSet,
 }
 
 impl TokenProfileData {
@@ -303,7 +339,7 @@ impl TokenProfileData {
         revision: ProfileRevision,
         definitions: Vec<TriggerDefinition>,
         root_triggers: TriggerSet,
-        forbidden_bare_characters: String,
+        forbidden_bare_characters: CharacterSet,
     ) -> Self {
         Self {
             revision,
@@ -364,9 +400,9 @@ impl TokenProfileData {
             },
         ];
         let forbidden_bare_characters = if profile.glyphs().admits_dollar_sigil() {
-            "\"".to_owned()
+            CharacterSet::from_text("\"")
         } else {
-            "\"$".to_owned()
+            CharacterSet::from_text("\"$")
         };
         Self::new(
             profile.revision(),
@@ -381,14 +417,14 @@ impl TokenProfileData {
     }
 }
 
-/// Layout-2 contextual identity of sealed token-profile data.
+/// Layout-3 contextual identity of sealed token-profile data.
 pub struct TokenProfileDomain;
 
 impl HashDomain for TokenProfileDomain {
     fn separation() -> DomainSeparation {
         DomainSeparation::Contextual {
             context: "raw-discovery 2026 recursive token profile",
-            layout: LayoutVersion::new(2),
+            layout: LayoutVersion::new(3),
         }
     }
 }

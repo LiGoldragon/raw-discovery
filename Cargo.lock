@@ -87,8 +87,8 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "content-identity"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/content-identity.git?rev=ac0075842799b3ece8909ad0eb4b8a92b596b188#ac0075842799b3ece8909ad0eb4b8a92b596b188"
+version = "0.2.0"
+source = "git+https://github.com/LiGoldragon/content-identity.git?rev=2fab7276807bf22c3e804f9ff7afbdc0895c1542#2fab7276807bf22c3e804f9ff7afbdc0895c1542"
 dependencies = [
  "blake3",
  "getrandom",

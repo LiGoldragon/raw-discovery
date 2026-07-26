@@ -155,7 +155,7 @@ fn adjacent_same_glyph_closes_belong_to_distinct_recursive_levels() {
             },
         ],
         TriggerSet::new(vec![boundary, shift]),
-        String::new(),
+        raw_discovery::CharacterSet::from_text(""),
     )
     .seal()
     .expect("angle profile seals");

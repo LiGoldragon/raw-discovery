@@ -51,8 +51,9 @@ pub use boundary::{
 };
 pub use error::{FoundClose, RecognizeError, SourcePosition};
 pub use profile::{
-    CharacterClass, GlyphSet, ProfileRevision, RawProfile, SealedBoundaryDiscoverySet,
-    SealedTokenProfile, SealedTriggerSet, TokenProfileData, TokenProfileDomain, TokenProfileError,
-    Trigger, TriggerDefinition, TriggerIdentifier, TriggerSet, TriggerTextRole,
+    CharacterClass, CharacterSet, GlyphSet, ProfileRevision, RawProfile,
+    SealedBoundaryDiscoverySet, SealedTokenProfile, SealedTriggerSet, TokenProfileData,
+    TokenProfileDomain, TokenProfileError, Trigger, TriggerDefinition, TriggerIdentifier,
+    TriggerSet, TriggerTextRole,
 };
 pub use recognizer::{ForeignLanguage, ForeignRawLayer, RawLayer, Recognizer};
