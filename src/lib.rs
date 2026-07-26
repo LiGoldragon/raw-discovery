@@ -40,14 +40,22 @@
 //! data to the shared evaluator rather than installing another textual engine.
 
 mod block;
+mod block_tree;
 mod boundary;
 mod error;
 mod profile;
 mod recognizer;
 
 pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
+pub use block_tree::{
+    BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
+    BlockTreeDiscoveryConfiguration, DiscoveredBlock, DiscoveredBlockTree,
+};
 pub use boundary::{
-    BoundaryReader, BoundarySide, DelimitedBoundary, SourceBound, TriggerMatch, TriggerMatchKind,
+    BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext, BoundaryDiscoveryContextIdentifier,
+    BoundaryDiscoveryError, BoundaryDiscoveryTransition, BoundaryReader, BoundarySide,
+    DelimitedBoundary, DiscoveredDelimitedBoundary, SealedBoundaryDiscoveryConfiguration,
+    SourceBound, TriggerMatch, TriggerMatchKind,
 };
 pub use error::{FoundClose, RecognizeError, SourcePosition};
 pub use profile::{
