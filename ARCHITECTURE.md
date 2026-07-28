@@ -1,119 +1,110 @@
 # raw-discovery — architecture
 
-This crate is the language-agnostic raw structure layer (crate L3) of the
-psyche-accepted shared-codec language family. Its direction is fixed by the
-accepted design in `reports/logos/up-close-design-v1.md` (§5, the
-`raw-discovery` crate, and §4.2 the versioned profile) and
-`reports/logos/shared-codec-library-v1.md` (§2.4). This document states the
-durable boundary the crate holds; it does not restate the code.
+`raw-discovery` is the language-agnostic first pass of the shared structural
+codec. It discovers recursive blocks and their exact source bounds without
+classifying declarations, fields, names, or types. Expected-type interpretation
+belongs to the shared evaluator and per-language structural data above this
+crate.
 
-## The one invariant: discover structure, never classify
+## The live source-bounded path
 
-The raw layer discovers structure and never classifies meaning. It knows
-delimiters and dots, not "declaration", "field", "name", or "type". Expected
-types — the machinery that reads meaning off this structure — live entirely in
-the crates above (`structural-codec` and the per-language forms), never here.
+The current source-bounded mechanism is implemented in `boundary.rs` and
+`block_tree.rs`:
 
-This is why the crate exists as a *separate boundary* rather than a module
-inside a codec: a structure-only consumer such as a formatter or linter links
-raw-discovery alone and cannot reach any language model from inside it. The
-dependency graph enforces the invariant — raw-discovery depends only on leaf
-mechanisms such as `content-identity`, `rkyv`, and `thiserror`, and on no Core
-language type.
+- `SourceBound` is one validated half-open range in a particular source text.
+- `BlockCue` records the opening source bound and the trigger definition that
+  matched it.
+- `BlockPrefix` records an optional configured prefix word and separator.
+- `BlockTree` is the universal untyped projection: complete `source_bound`,
+  `cue`, optional `prefix`, `content_bound`, optional `closing_bound`, and
+  recursive `children`.
+- `DiscoveredBlock` implements that trait, and `DiscoveredBlockTree` holds the
+  source-ordered roots.
+- `BlockTreeDiscoveryConfiguration` is archiveable rule data. Its sealed form is
+  bound to one exact token profile before it may discover source.
 
-## Application is a designed-explicit promotion
+Every discovered block on this live path carries its source range. Bounds are
+runtime references into the source being decoded, not durable identity, and the
+runtime tree intentionally has no archive derives. The discovery configuration,
+not a source-bound result, is the portable data.
 
-nota's current parser expresses application *structurally*: a dotted head glued
-to its argument group, with no `Application` variant in its `Block` model. The
-accepted design (up-close §5) deliberately **promotes** application to a
-first-class `Block::Application { head, payload }` variant, so the raw layer
-names what nota leaves implicit. The binding rule is unchanged and
-psyche-blessed: the dot is right-associative, `A.B.C = A.(B.C)`, so the head is
-always the leftmost single segment and the payload is the remainder.
+The `Block` / `Document` recognizer model still exists for established NOTA
+compatibility. That older portable tree does not carry bounds and must not be
+presented as the pass-1 architecture or as evidence that discovered structure is
+span-free.
 
-This is the one place the crate is *designed-new* rather than a verbatim lift.
-The block queries, the dotted split/join primitives, the capitalization
-predicates, and the recursive-descent reader are lifted verbatim from nota
-next-gen (tip `18e2e8d0`); the explicit `Application` variant is the design's
-promotion of nota's implicit structural application.
+## Boundary-first recursion
 
-## Capitalization is exposed as data, not meaning
+Discovery is outside-in. `BoundaryReader` finds configured opening and closing
+boundaries, balances active nested boundaries, treats configured carrier
+interiors such as strings and comments as opaque, and returns a bounded
+interior. Recursive discovery then constructs children only inside that
+interior. A child cannot consume or inspect source outside its parent's content
+bound.
 
-Capitalization is semantic at the family level — a capitalized-leading atom
-reads as an object, a lowercase-leading atom as a name. This crate exposes the
-classifier (`AtomCase`) as **data** and attaches no meaning to it. A reader may
-ask whether an atom reads as PascalCase; the crate never stamps "object" or
-"name" onto the atom. `AtomCase::of` classifies every non-empty atom into
-exactly one case, with `Symbol` as the catch-all.
+This pass finds boundaries only. It does not parse a full grammar and does not
+construct a preliminary token stream. Typed parsing revisits the bounded content
+in pass 2 under an expected structural type.
 
-## Profiles are sealed data, never runtime guessing
+The current live traversal is delimiter-based. Its balanced-scan core is
+production code in `discover_delimited_with`; only a public convenience wrapper
+around that core is test-only.
 
-`TokenProfileData` carries generic trigger definitions, a profile revision,
-the root trigger set, and the negative-space exclusions for bare atoms. A
-whitespace trigger carries its nonempty canonical emitted spelling as
-identity-bearing data while recognition continues to match the generic
-whitespace class and its complete runs. Sealing validates every definition and
-active set, rejects equal complete matches, and pins the data under
-`TokenProfileDomain`. A new lexical rule therefore changes explicit versioned
-data and identity rather than reader code or a runtime heuristic.
+## Cues and language rule data
 
-Selection is local to an expected structural position. A sealed form activates
-its trigger set at the current cursor, and the generic boundary reader chooses
-the longest complete match only within that set. Vector order cannot encode
-precedence. Operators are inactive outside expression positions because those
-positions do not activate their identifiers. A closer such as `>` therefore
-cannot silently become `>>` when only the closer is active.
+A cue is evidence that a block begins. In the currently wired
+`DiscoveredBlock`, `BlockCue` represents a configured opening boundary. Protos
+family prefixes may be attached to those openings through data-driven prefix
+rules.
 
-Recognition is boundary-first and recursive, not a horizontal tokenization
-pass. A group form finds its configured outside boundary while respecting its
-configured carriers and trivia, then reads the interior under the expected
-interior forms and trigger sets. Negative space between active triggers is bare
-text. No `LexicalToken` block, preliminary token stream, or parallel annotation
-tree exists.
+The approved model also requires language-specific cue-to-termination rules.
+For Rust, an inclusive cue such as `struct` opens a block, and Rust termination
+rules find its end while recursively discovering inner blocks. That Rust
+cue-to-termination variant is not wired yet. It must extend the shared
+source-bounded `BlockTree` mechanism rather than install a Rust parser or revive
+the older recognizer as a second evaluator.
 
-The shared `BoundaryReader` owns this mechanism. Boundary discovery accepts
-only a sealed set of boundary, carrier, and trivia triggers; horizontal
-application, punctuation, and leading-character-class triggers cannot enter
-that set. It balances nested active boundaries glyph-by-glyph, treats carrier
-interiors as opaque, advances the parent past the matching close, and returns a
-validated half-open interior bound. Child readers are constructed within that
-bound, so no failed child can consume or inspect text in its parent.
+Strings and comments remain opaque to both delimiter balancing and future
+cue-to-termination scanning.
 
-`RawProfile` and `GlyphSet` remain compatibility selectors for the established
-NOTA profiles. They seal into the same generic profile representation. Two
-readers that disagree about lexical rules disagree by content identity.
+## Profiles and longest match
 
-## The raw-layer boundary
+`TokenProfileData` contains canonical trigger definitions, active sets, and
+profile revision. Sealing validates those rules and binds consumers to the
+profile identity.
 
-`RawLayer::Foreign` is a typed placeholder that names a target language. It is
-not an adapter slot and not a grammar escape hatch. A target language supplies
-sealed profile and structural-form data to the shared evaluator; it does not
-install a foreign parser, printer, or second evaluator in raw-discovery.
+Token-level longest match is lexical law: one token is the longest run accepted
+by its character class. At configured boundary positions, selection is limited
+to the exact sealed active set; vector order never establishes precedence.
+Typed disjointness and conservative refusal govern structural choices above the
+token level.
 
-## Structure is span-free
+## Boundary of responsibility
 
-The recognized `Block` tree carries no source spans. The recognizer tracks
-source positions only to build `RecognizeError` diagnostics; byte offsets into
-one particular source string are not portable identity, so they are recovered
-for errors and never attached to the structure. This keeps the discovered
-structure portable, content-addressable data that round-trips through rkyv.
+`raw-discovery` depends on no encoded language model. It returns untyped,
+source-bounded structure plus the rule evidence needed to interpret it. It
+never labels a block as a declaration, field, name, or type.
 
-(The up-close §5 sketch wrote spans as "dropped from the archived form"; since
-the recognized `Block` *is* the archivable form here, spans are dropped from the
-model entirely and live only on the error type. A future consumer needing spans
-layers them above this crate.)
+`RawLayer::Foreign` is a typed target-language placeholder, not an adapter slot
+or grammar escape hatch. A language supplies typed rule data to the common
+mechanism; it does not install a foreign parser, printer, or parallel evaluator.
 
-## Serialization and the portable bound
+The portable rule types follow the shared rkyv discipline. Absolute archive and
+profile digest witnesses force explicit revision decisions when that portable
+rule data changes. Runtime source bounds are checked for valid UTF-8 boundaries
+and source extent rather than archived or hashed as portable structure.
 
-The data types derive rkyv under the portable-archive feature discipline —
-little-endian, 32-bit-pointer, unaligned, `bytecheck` validation on read.
-`content-identity` owns the shared contextual hashing mechanism. Tests lock an
-absolute profile digest and an absolute digest of a composite archived document;
-archive-image drift is therefore a failing test that forces an explicit
-layout-version decision.
+## Current code map
 
-## Producer-first consumption
+- `src/boundary.rs` — `SourceBound`, configured recursive boundary traversal,
+  carrier opacity, and the live balanced-scan core.
+- `src/block_tree.rs` — `BlockCue`, `BlockTree`, source-bounded runtime nodes,
+  prefix rules, and discovery configuration.
+- `src/profile.rs` — canonical trigger/profile data and sealing.
+- `src/block.rs`, `src/recognizer.rs`, `src/error.rs` — the older span-free NOTA
+  compatibility recognizer; not the target pass-1 tree.
+- `tests/block_tree.rs`, `tests/boundary_discovery.rs` — the current
+  source-bounded witnesses.
 
-This micro-repository is the canonical producer for raw structural discovery.
-Consumers take exact immutable revisions through the producer-first release
-train. It is not a compatibility mirror of a monorepo.
+This micro-repository is the canonical producer. Consumers take exact immutable
+revisions through the producer-first release train.
