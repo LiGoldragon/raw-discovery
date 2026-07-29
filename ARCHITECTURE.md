@@ -57,13 +57,14 @@ represents a configured opening boundary. Protos-family prefixes may be
 attached to those openings through data-driven prefix rules.
 
 `CueTerminatedBlockDiscoveryConfiguration` adds archiveable complete-word cue
-and exact termination rules to the same sealed delimiter configuration.
+and typed termination rules to the same sealed delimiter configuration.
 `DiscoveredCueTerminatedBlockTree` treats the cue as inclusive, observes the
 termination only at the cue's source level, and recursively carries every
-delimited child with exact source bounds. A Rust `struct`/`;` rule is the first
-production-directed witness. This is boundary discovery, not a Rust grammar:
-the rule records neither declarations nor fields, and it allocates no
-identities.
+delimited child with exact source bounds. Termination may be an exact spelling,
+as for a Rust `struct`/`;`, or the closing side of one balanced boundary that
+remains a child, as for a Rust enum body. This is boundary discovery, not a
+Rust grammar: the rule records neither declarations nor fields, and it
+allocates no identities.
 
 Configured strings and comments remain opaque to both delimiter balancing and
 cue-to-termination scanning.

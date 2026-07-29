@@ -20,6 +20,7 @@ const LINE_COMMENT: TriggerIdentifier = TriggerIdentifier::new(4);
 const BLOCK_COMMENT: TriggerIdentifier = TriggerIdentifier::new(5);
 const WHITESPACE: TriggerIdentifier = TriggerIdentifier::new(6);
 const STRUCT: CueTerminationRuleIdentifier = CueTerminationRuleIdentifier::new(0);
+const ENUM: CueTerminationRuleIdentifier = CueTerminationRuleIdentifier::new(1);
 
 fn rust_word_characters() -> CharacterClass {
     CharacterClass::Characters(CharacterSet::new(
@@ -119,12 +120,10 @@ fn configuration() -> CueTerminatedBlockDiscoveryConfiguration {
                 BoundaryDiscoveryTransition::new(root, BRACE, root),
             ],
         ),
-        vec![CueTerminationRule::new(
-            STRUCT,
-            "struct",
-            ";",
-            rust_word_characters(),
-        )],
+        vec![
+            CueTerminationRule::new(STRUCT, "struct", ";", rust_word_characters()),
+            CueTerminationRule::through_boundary(ENUM, "enum", BRACE, rust_word_characters()),
+        ],
     )
 }
 
@@ -165,6 +164,44 @@ fn struct_is_an_inclusive_cue_with_exact_source_bounds() {
     assert_eq!(
         child.cue().evidence(),
         CueTerminatedBlockCueEvidence::Boundary(PARENTHESIS)
+    );
+}
+
+#[test]
+fn enum_terminates_after_its_balanced_body_boundary() {
+    let source = "pub enum Status { Ready, Batch(Vec<u8>), } pub struct After(u8); fn after() {}";
+    let tree = discover(source).expect("boundary-terminated enum");
+    assert_eq!(tree.root_blocks().len(), 2);
+
+    let enumeration = &tree.root_blocks()[0];
+    assert_eq!(
+        enumeration.cue().evidence(),
+        CueTerminatedBlockCueEvidence::CueTermination(ENUM)
+    );
+    assert_eq!(
+        text(source, enumeration.source_bound()),
+        "enum Status { Ready, Batch(Vec<u8>), }"
+    );
+    assert_eq!(
+        text(
+            source,
+            enumeration.closing_bound().expect("enum body closing")
+        ),
+        "}"
+    );
+    let body = enumeration.children().first().expect("enum body");
+    assert_eq!(
+        body.cue().evidence(),
+        CueTerminatedBlockCueEvidence::Boundary(BRACE)
+    );
+    assert_eq!(
+        text(source, body.source_bound()),
+        "{ Ready, Batch(Vec<u8>), }"
+    );
+
+    assert_eq!(
+        text(source, tree.root_blocks()[1].source_bound()),
+        "struct After(u8);"
     );
 }
 

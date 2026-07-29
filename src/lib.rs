@@ -51,10 +51,10 @@ pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
 pub use block_tree::{
     BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
     BlockTreeDiscoveryConfiguration, CueTerminatedBlockCueEvidence,
-    CueTerminatedBlockDiscoveryConfiguration, CueTerminationRule, CueTerminationRuleIdentifier,
-    DiscoveredBlock, DiscoveredBlockTree, DiscoveredCueTerminatedBlock,
-    DiscoveredCueTerminatedBlockTree, SealedBlockTreeDiscoveryConfiguration,
-    SealedCueTerminatedBlockDiscoveryConfiguration,
+    CueTerminatedBlockDiscoveryConfiguration, CueTermination, CueTerminationRule,
+    CueTerminationRuleIdentifier, DiscoveredBlock, DiscoveredBlockTree,
+    DiscoveredCueTerminatedBlock, DiscoveredCueTerminatedBlockTree,
+    SealedBlockTreeDiscoveryConfiguration, SealedCueTerminatedBlockDiscoveryConfiguration,
 };
 pub use boundary::{
     BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext, BoundaryDiscoveryContextIdentifier,

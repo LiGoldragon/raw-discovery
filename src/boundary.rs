@@ -869,6 +869,64 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         }
     }
 
+    /// Discover delimited children through one exact top-level boundary.
+    ///
+    /// The selected boundary is balanced by the shared traversal, retained as
+    /// the final child, and its closing bound is returned as the enclosing
+    /// cue block's termination.
+    pub(crate) fn discover_children_through_boundary(
+        &mut self,
+        termination: TriggerIdentifier,
+        configuration: &SealedBoundaryDiscoveryConfiguration,
+    ) -> Result<(Vec<DiscoveredDelimitedBoundary>, Option<SourceBound>), BoundaryDiscoveryError>
+    {
+        if !configuration.matches_profile(self.profile) {
+            return Err(TokenProfileError::TriggerSetProfileMismatch.into());
+        }
+        let traversal = BoundaryTraversal::Configured {
+            configuration,
+            context: configuration.root(),
+        };
+        let mut children = Vec::new();
+        loop {
+            if self.is_end() {
+                return Ok((children, None));
+            }
+            let active = self.discovery_active(traversal)?;
+            let Some(matched) = self.longest_discovery_match(active, None)? else {
+                self.advance_character()
+                    .expect("the bounded end condition was checked");
+                continue;
+            };
+            match matched.kind {
+                TriggerMatchKind::Boundary(BoundarySide::Opening) => {
+                    let identifier = matched.identifier;
+                    let child =
+                        self.discover_delimited_with(identifier, traversal.child_for(identifier)?)?;
+                    let closing = child.boundary().closing();
+                    children.push(child);
+                    if identifier == termination {
+                        return Ok((children, Some(closing)));
+                    }
+                }
+                TriggerMatchKind::Boundary(BoundarySide::Closing) => {
+                    return Err(BoundaryDiscoveryError::UnexpectedClose {
+                        identifier: matched.identifier,
+                        bound: SourceBound::between(matched.start, matched.end),
+                    });
+                }
+                TriggerMatchKind::Carrier | TriggerMatchKind::Trivia => {
+                    self.advance_to(matched.end);
+                }
+                TriggerMatchKind::Application
+                | TriggerMatchKind::Punctuation
+                | TriggerMatchKind::LeadingCharacterClass => {
+                    unreachable!("a sealed boundary discovery set excludes horizontal triggers")
+                }
+            }
+        }
+    }
+
     fn discover_delimited_with(
         &mut self,
         identifier: TriggerIdentifier,

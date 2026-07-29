@@ -62,16 +62,25 @@ impl CueTerminationRuleIdentifier {
     }
 }
 
-/// Canonical pass-1 rule for a word cue and its terminating spelling.
+/// Canonical pass-1 rule for a word cue and its typed termination.
 ///
 /// `word_characters` is used only to prove that the cue is a complete word,
 /// rather than a prefix within another word. The rule does not describe the
 /// block's grammar.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub enum CueTermination {
+    /// End at an exact spelling observed at the cue's source level.
+    ExactSpelling(String),
+    /// End after one complete balanced boundary observed at the cue's source
+    /// level. The boundary remains a discovered child of the cue block.
+    ClosingBoundary(TriggerIdentifier),
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct CueTerminationRule {
     identifier: CueTerminationRuleIdentifier,
     cue: String,
-    termination: String,
+    termination: CueTermination,
     word_characters: CharacterClass,
 }
 
@@ -85,7 +94,21 @@ impl CueTerminationRule {
         Self {
             identifier,
             cue: cue.into(),
-            termination: termination.into(),
+            termination: CueTermination::ExactSpelling(termination.into()),
+            word_characters,
+        }
+    }
+
+    pub fn through_boundary(
+        identifier: CueTerminationRuleIdentifier,
+        cue: impl Into<String>,
+        boundary: TriggerIdentifier,
+        word_characters: CharacterClass,
+    ) -> Self {
+        Self {
+            identifier,
+            cue: cue.into(),
+            termination: CueTermination::ClosingBoundary(boundary),
             word_characters,
         }
     }
@@ -98,7 +121,7 @@ impl CueTerminationRule {
         &self.cue
     }
 
-    pub fn termination(&self) -> &str {
+    pub fn termination(&self) -> &CueTermination {
         &self.termination
     }
 
@@ -522,10 +545,34 @@ impl CueTerminatedBlockDiscoveryConfiguration {
                     rule: rule.identifier,
                 });
             }
-            if rule.termination.is_empty() {
-                return Err(BlockDiscoveryError::EmptyTermination {
-                    rule: rule.identifier,
-                });
+            match &rule.termination {
+                CueTermination::ExactSpelling(spelling) if spelling.is_empty() => {
+                    return Err(BlockDiscoveryError::EmptyTermination {
+                        rule: rule.identifier,
+                    });
+                }
+                CueTermination::ClosingBoundary(boundary) => {
+                    if !boundaries
+                        .active_triggers(boundaries.root())?
+                        .triggers()
+                        .contains(boundary)
+                    {
+                        return Err(TokenProfileError::InactiveBoundary {
+                            identifier: *boundary,
+                        }
+                        .into());
+                    }
+                    if !matches!(
+                        profile.definition(*boundary)?.trigger,
+                        Trigger::Boundary { .. }
+                    ) {
+                        return Err(TokenProfileError::UnsupportedBoundaryDiscoveryTrigger(
+                            *boundary,
+                        )
+                        .into());
+                    }
+                }
+                CueTermination::ExactSpelling(_) => {}
             }
             if !rule.word_characters.is_canonical() {
                 return Err(BlockDiscoveryError::NoncanonicalCueAlphabet {
@@ -542,12 +589,14 @@ impl CueTerminatedBlockDiscoveryConfiguration {
                 });
             }
             ensure_rule_spelling_is_disjoint(profile, &boundaries, rule.identifier, &rule.cue)?;
-            ensure_rule_spelling_is_disjoint(
-                profile,
-                &boundaries,
-                rule.identifier,
-                &rule.termination,
-            )?;
+            if let CueTermination::ExactSpelling(termination) = &rule.termination {
+                ensure_rule_spelling_is_disjoint(
+                    profile,
+                    &boundaries,
+                    rule.identifier,
+                    termination,
+                )?;
+            }
         }
         for (position, left) in self.rules.iter().enumerate() {
             if let Some(right) = self.rules[position + 1..]
@@ -611,8 +660,13 @@ impl DiscoveredCueTerminatedBlockTree {
                 let cue = reader
                     .consume_exact_spelling(rule.cue())
                     .expect("the selected cue was matched at the current cursor");
-                let (children, closing) = reader
-                    .discover_children_until(rule.termination(), &configuration.boundaries)?;
+                let (children, closing) = match rule.termination() {
+                    CueTermination::ExactSpelling(termination) => {
+                        reader.discover_children_until(termination, &configuration.boundaries)?
+                    }
+                    CueTermination::ClosingBoundary(boundary) => reader
+                        .discover_children_through_boundary(*boundary, &configuration.boundaries)?,
+                };
                 let Some(closing) = closing else {
                     return Err(BlockDiscoveryError::UnclosedCueTerminatedBlock {
                         rule: rule.identifier(),
