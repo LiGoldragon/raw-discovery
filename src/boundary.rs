@@ -58,7 +58,7 @@ impl SourceBound {
         self.start == self.end
     }
 
-    fn between(start: usize, end: usize) -> Self {
+    pub(crate) fn between(start: usize, end: usize) -> Self {
         Self { start, end }
     }
 }
@@ -385,6 +385,10 @@ impl SealedBoundaryDiscoveryConfiguration {
         Ok(self.context(context)?.active.active_triggers())
     }
 
+    pub(crate) fn contexts(&self) -> impl Iterator<Item = BoundaryDiscoveryContextIdentifier> + '_ {
+        self.contexts.iter().map(|context| context.identifier)
+    }
+
     pub(crate) fn configures_boundary(&self, boundary: TriggerIdentifier) -> bool {
         self.contexts
             .iter()
@@ -633,6 +637,19 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         &self.source[self.byte_offset..self.bound.end]
     }
 
+    pub(crate) fn consume_exact_spelling(&mut self, spelling: &str) -> Option<SourceBound> {
+        self.remaining().starts_with(spelling).then(|| {
+            let bound = SourceBound::between(self.byte_offset, self.byte_offset + spelling.len());
+            self.advance_to(bound.end());
+            bound
+        })
+    }
+
+    pub(crate) fn advance_uninterpreted_character(&mut self) {
+        self.advance_character()
+            .expect("the caller checked that the bounded cursor is not at its end");
+    }
+
     pub fn source_between(&self, start: usize, end: usize) -> &'source str {
         assert!(
             start >= self.bound.start && end <= self.bound.end && start <= end,
@@ -791,6 +808,65 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         let (children, closing) = self.discover_children_with(None, traversal)?;
         debug_assert!(closing.is_none());
         Ok(children)
+    }
+
+    /// Discover delimited children until an exact top-level termination.
+    ///
+    /// The termination is observed only at this source level. Delimited
+    /// children are consumed through the same recursive balanced traversal as
+    /// [`Self::discover_boundary_children`], while carriers and comments are
+    /// consumed opaquely.
+    pub(crate) fn discover_children_until(
+        &mut self,
+        termination: &str,
+        configuration: &SealedBoundaryDiscoveryConfiguration,
+    ) -> Result<(Vec<DiscoveredDelimitedBoundary>, Option<SourceBound>), BoundaryDiscoveryError>
+    {
+        if !configuration.matches_profile(self.profile) {
+            return Err(TokenProfileError::TriggerSetProfileMismatch.into());
+        }
+        let traversal = BoundaryTraversal::Configured {
+            configuration,
+            context: configuration.root(),
+        };
+        let mut children = Vec::new();
+        loop {
+            if self.is_end() {
+                return Ok((children, None));
+            }
+            if let Some(closing) = self.consume_exact_spelling(termination) {
+                return Ok((children, Some(closing)));
+            }
+
+            let active = self.discovery_active(traversal)?;
+            let Some(matched) = self.longest_discovery_match(active, None)? else {
+                self.advance_character()
+                    .expect("the bounded end condition was checked");
+                continue;
+            };
+            match matched.kind {
+                TriggerMatchKind::Boundary(BoundarySide::Opening) => {
+                    children.push(self.discover_delimited_with(
+                        matched.identifier,
+                        traversal.child_for(matched.identifier)?,
+                    )?);
+                }
+                TriggerMatchKind::Boundary(BoundarySide::Closing) => {
+                    return Err(BoundaryDiscoveryError::UnexpectedClose {
+                        identifier: matched.identifier,
+                        bound: SourceBound::between(matched.start, matched.end),
+                    });
+                }
+                TriggerMatchKind::Carrier | TriggerMatchKind::Trivia => {
+                    self.advance_to(matched.end);
+                }
+                TriggerMatchKind::Application
+                | TriggerMatchKind::Punctuation
+                | TriggerMatchKind::LeadingCharacterClass => {
+                    unreachable!("a sealed boundary discovery set excludes horizontal triggers")
+                }
+            }
+        }
     }
 
     fn discover_delimited_with(

@@ -1,11 +1,12 @@
 //! # raw-discovery — the language-agnostic raw structure layer
 //!
-//! This crate discovers structure and **never classifies**. A [`Recognizer`]
-//! reads source text into a tree of raw [`Block`]s — delimiter nesting,
-//! right-associative dot-application, pipe text, bare atoms — and attaches no
-//! meaning to any of it. "Declaration", "field", "name", "type" are words this
-//! crate does not know; the expected types that give structure meaning live
-//! entirely in the crates above it.
+//! This crate discovers structure and **never classifies**. The live
+//! source-bounded path produces recursive delimiter or cue-terminated
+//! [`BlockTree`] values before expected types interpret them. The compatibility
+//! [`Recognizer`] still reads established NOTA text into portable [`Block`]s.
+//! "Declaration", "field", "name", and "type" are words this crate does not
+//! know; the expected types that give structure meaning live entirely in the
+//! crates above it.
 //!
 //! That invariant is the crate's reason to exist as a boundary. A consumer that
 //! wants only structure — a formatter, a linter, a tree-sitter bridge — links
@@ -49,8 +50,11 @@ mod recognizer;
 pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
 pub use block_tree::{
     BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
-    BlockTreeDiscoveryConfiguration, DiscoveredBlock, DiscoveredBlockTree,
-    SealedBlockTreeDiscoveryConfiguration,
+    BlockTreeDiscoveryConfiguration, CueTerminatedBlockCueEvidence,
+    CueTerminatedBlockDiscoveryConfiguration, CueTerminationRule, CueTerminationRuleIdentifier,
+    DiscoveredBlock, DiscoveredBlockTree, DiscoveredCueTerminatedBlock,
+    DiscoveredCueTerminatedBlockTree, SealedBlockTreeDiscoveryConfiguration,
+    SealedCueTerminatedBlockDiscoveryConfiguration,
 };
 pub use boundary::{
     BoundaryDiscoveryConfiguration, BoundaryDiscoveryContext, BoundaryDiscoveryContextIdentifier,

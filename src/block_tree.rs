@@ -14,25 +14,96 @@ use crate::{
     TriggerIdentifier,
 };
 
-/// One opening boundary recorded as a block cue.
+/// One inclusive spelling recorded as a block cue.
 ///
 /// The cue bound is the opening spelling in the source. Its evidence is the
-/// profile boundary declaration that matched that spelling.
+/// typed sealed rule identity that matched that spelling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BlockCue {
+pub struct BlockCue<Evidence = TriggerIdentifier> {
     bound: SourceBound,
-    evidence: TriggerIdentifier,
+    evidence: Evidence,
 }
 
-impl BlockCue {
+impl<Evidence: Copy> BlockCue<Evidence> {
     /// The source bound of the opening boundary spelling.
     pub fn bound(self) -> SourceBound {
         self.bound
     }
 
-    /// The profile boundary declaration that supplied this cue.
-    pub fn evidence(self) -> TriggerIdentifier {
+    /// The sealed boundary or cue rule that supplied this cue.
+    pub fn evidence(self) -> Evidence {
         self.evidence
+    }
+}
+
+/// Canonical identity of one cue-to-termination rule.
+#[derive(
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub struct CueTerminationRuleIdentifier(u16);
+
+impl CueTerminationRuleIdentifier {
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+/// Canonical pass-1 rule for a word cue and its terminating spelling.
+///
+/// `word_characters` is used only to prove that the cue is a complete word,
+/// rather than a prefix within another word. The rule does not describe the
+/// block's grammar.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct CueTerminationRule {
+    identifier: CueTerminationRuleIdentifier,
+    cue: String,
+    termination: String,
+    word_characters: CharacterClass,
+}
+
+impl CueTerminationRule {
+    pub fn new(
+        identifier: CueTerminationRuleIdentifier,
+        cue: impl Into<String>,
+        termination: impl Into<String>,
+        word_characters: CharacterClass,
+    ) -> Self {
+        Self {
+            identifier,
+            cue: cue.into(),
+            termination: termination.into(),
+            word_characters,
+        }
+    }
+
+    pub fn identifier(&self) -> CueTerminationRuleIdentifier {
+        self.identifier
+    }
+
+    pub fn cue(&self) -> &str {
+        &self.cue
+    }
+
+    pub fn termination(&self) -> &str {
+        &self.termination
+    }
+
+    pub fn word_characters(&self) -> &CharacterClass {
+        &self.word_characters
     }
 }
 
@@ -246,12 +317,15 @@ impl SealedBlockTreeDiscoveryConfiguration {
 /// the text within the opening and closing spellings; child order follows the
 /// source order in that bound.
 pub trait BlockTree {
+    /// The typed rule-identity carried by this language's cue.
+    type CueEvidence: Copy;
+
     /// The complete source range of this block, including an attached prefix,
     /// opening, content, and closing spelling.
     fn source_bound(&self) -> SourceBound;
 
     /// The opening boundary and the profile declaration that matched it.
-    fn cue(&self) -> BlockCue;
+    fn cue(&self) -> BlockCue<Self::CueEvidence>;
 
     /// The configured prefix evidence, when the source matched its rule.
     fn prefix(&self) -> Option<BlockPrefix>;
@@ -284,6 +358,8 @@ pub struct DiscoveredBlock {
 }
 
 impl BlockTree for DiscoveredBlock {
+    type CueEvidence = TriggerIdentifier;
+
     fn source_bound(&self) -> SourceBound {
         self.source
     }
@@ -294,6 +370,51 @@ impl BlockTree for DiscoveredBlock {
 
     fn prefix(&self) -> Option<BlockPrefix> {
         self.prefix
+    }
+
+    fn content_bound(&self) -> SourceBound {
+        self.content
+    }
+
+    fn closing_bound(&self) -> Option<SourceBound> {
+        Some(self.closing)
+    }
+
+    fn children(&self) -> &[Self] {
+        &self.children
+    }
+}
+
+/// Evidence for either a cue-terminated block or one of its delimited children.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueTerminatedBlockCueEvidence {
+    CueTermination(CueTerminationRuleIdentifier),
+    Boundary(TriggerIdentifier),
+}
+
+/// One runtime-only cue-terminated block and its recursively delimited children.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredCueTerminatedBlock {
+    source: SourceBound,
+    cue: BlockCue<CueTerminatedBlockCueEvidence>,
+    content: SourceBound,
+    closing: SourceBound,
+    children: Vec<Self>,
+}
+
+impl BlockTree for DiscoveredCueTerminatedBlock {
+    type CueEvidence = CueTerminatedBlockCueEvidence;
+
+    fn source_bound(&self) -> SourceBound {
+        self.source
+    }
+
+    fn cue(&self) -> BlockCue<Self::CueEvidence> {
+        self.cue
+    }
+
+    fn prefix(&self) -> Option<BlockPrefix> {
+        None
     }
 
     fn content_bound(&self) -> SourceBound {
@@ -340,6 +461,275 @@ impl DiscoveredBlockTree {
     /// Top-level blocks in source order.
     pub fn root_blocks(&self) -> &[DiscoveredBlock] {
         &self.root_blocks
+    }
+}
+
+/// Canonical archiveable rules for cue-to-termination pass-1 discovery.
+///
+/// Delimiter, carrier, comment, and trivia behavior is supplied by the same
+/// boundary configuration used by [`DiscoveredBlockTree`]. Cue rules add only
+/// complete-word beginnings and exact termination spellings.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct CueTerminatedBlockDiscoveryConfiguration {
+    boundaries: BoundaryDiscoveryConfiguration,
+    rules: Vec<CueTerminationRule>,
+}
+
+impl CueTerminatedBlockDiscoveryConfiguration {
+    pub fn new(
+        boundaries: BoundaryDiscoveryConfiguration,
+        mut rules: Vec<CueTerminationRule>,
+    ) -> Self {
+        rules.sort_unstable_by_key(CueTerminationRule::identifier);
+        Self { boundaries, rules }
+    }
+
+    pub fn boundaries(&self) -> &BoundaryDiscoveryConfiguration {
+        &self.boundaries
+    }
+
+    pub fn rules(&self) -> &[CueTerminationRule] {
+        &self.rules
+    }
+
+    pub fn seal(
+        &self,
+        profile: &SealedTokenProfile,
+    ) -> Result<SealedCueTerminatedBlockDiscoveryConfiguration, BlockDiscoveryError> {
+        let boundaries = self.boundaries.seal(profile)?;
+        let mut rule_identifiers: Vec<_> = self
+            .rules
+            .iter()
+            .map(CueTerminationRule::identifier)
+            .collect();
+        rule_identifiers.sort_unstable();
+        if let Some(&rule) = rule_identifiers
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(&pair[0]))
+        {
+            return Err(BlockDiscoveryError::DuplicateCueRule { rule });
+        }
+        if !self
+            .rules
+            .windows(2)
+            .all(|pair| pair[0].identifier() < pair[1].identifier())
+        {
+            return Err(BlockDiscoveryError::NoncanonicalCueRuleOrder);
+        }
+        for rule in &self.rules {
+            if rule.cue.is_empty() {
+                return Err(BlockDiscoveryError::EmptyCue {
+                    rule: rule.identifier,
+                });
+            }
+            if rule.termination.is_empty() {
+                return Err(BlockDiscoveryError::EmptyTermination {
+                    rule: rule.identifier,
+                });
+            }
+            if !rule.word_characters.is_canonical() {
+                return Err(BlockDiscoveryError::NoncanonicalCueAlphabet {
+                    rule: rule.identifier,
+                });
+            }
+            if !rule
+                .cue
+                .chars()
+                .all(|character| rule.word_characters.matches(character))
+            {
+                return Err(BlockDiscoveryError::CueOutsideWordAlphabet {
+                    rule: rule.identifier,
+                });
+            }
+            ensure_rule_spelling_is_disjoint(profile, &boundaries, rule.identifier, &rule.cue)?;
+            ensure_rule_spelling_is_disjoint(
+                profile,
+                &boundaries,
+                rule.identifier,
+                &rule.termination,
+            )?;
+        }
+        for (position, left) in self.rules.iter().enumerate() {
+            if let Some(right) = self.rules[position + 1..]
+                .iter()
+                .find(|right| right.cue == left.cue)
+            {
+                return Err(BlockDiscoveryError::DuplicateCueSpelling {
+                    first: left.identifier,
+                    second: right.identifier,
+                });
+            }
+        }
+        Ok(SealedCueTerminatedBlockDiscoveryConfiguration {
+            boundaries,
+            rules: self.rules.clone(),
+        })
+    }
+}
+
+/// Runtime cue rules proven against one exact token profile.
+#[derive(Clone, Debug)]
+pub struct SealedCueTerminatedBlockDiscoveryConfiguration {
+    boundaries: SealedBoundaryDiscoveryConfiguration,
+    rules: Vec<CueTerminationRule>,
+}
+
+impl SealedCueTerminatedBlockDiscoveryConfiguration {
+    fn matches_profile(&self, profile: &SealedTokenProfile) -> bool {
+        self.boundaries.matches_profile(profile)
+    }
+
+    pub fn rules(&self) -> &[CueTerminationRule] {
+        &self.rules
+    }
+}
+
+/// The source-ordered roots found by cue-to-termination pass 1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredCueTerminatedBlockTree {
+    root_blocks: Vec<DiscoveredCueTerminatedBlock>,
+}
+
+impl DiscoveredCueTerminatedBlockTree {
+    pub fn discover(
+        source: &str,
+        profile: &SealedTokenProfile,
+        configuration: &SealedCueTerminatedBlockDiscoveryConfiguration,
+    ) -> Result<Self, BlockDiscoveryError> {
+        if !configuration.matches_profile(profile) {
+            return Err(TokenProfileError::TriggerSetProfileMismatch.into());
+        }
+        let mut reader = crate::BoundaryReader::new(source, profile);
+        let root_context = configuration.boundaries.root();
+        let active = configuration.boundaries.active_triggers(root_context)?;
+        let mut root_blocks = Vec::new();
+        while !reader.is_end() {
+            if let Some(rule) =
+                matching_cue_rule(source, reader.byte_offset(), &configuration.rules)
+            {
+                let cue_start = reader.byte_offset();
+                let cue = reader
+                    .consume_exact_spelling(rule.cue())
+                    .expect("the selected cue was matched at the current cursor");
+                let (children, closing) = reader
+                    .discover_children_until(rule.termination(), &configuration.boundaries)?;
+                let Some(closing) = closing else {
+                    return Err(BlockDiscoveryError::UnclosedCueTerminatedBlock {
+                        rule: rule.identifier(),
+                        cue,
+                    });
+                };
+                let children = children
+                    .iter()
+                    .map(DiscoveredCueTerminatedBlock::from_boundary)
+                    .collect::<Vec<_>>();
+                root_blocks.push(DiscoveredCueTerminatedBlock {
+                    source: SourceBound::checked(source, cue_start, closing.end())?,
+                    cue: BlockCue {
+                        bound: cue,
+                        evidence: CueTerminatedBlockCueEvidence::CueTermination(rule.identifier()),
+                    },
+                    content: SourceBound::checked(source, cue.end(), closing.start())?,
+                    closing,
+                    children,
+                });
+                continue;
+            }
+
+            if reader.longest_match(active)?.is_some() {
+                reader.consume(active)?;
+            } else {
+                reader.advance_uninterpreted_character();
+            }
+        }
+        Ok(Self { root_blocks })
+    }
+
+    pub fn root_blocks(&self) -> &[DiscoveredCueTerminatedBlock] {
+        &self.root_blocks
+    }
+}
+
+impl DiscoveredCueTerminatedBlock {
+    fn from_boundary(discovered: &DiscoveredDelimitedBoundary) -> Self {
+        let boundary = discovered.boundary();
+        Self {
+            source: SourceBound::between(boundary.opening().start(), boundary.closing().end()),
+            cue: BlockCue {
+                bound: boundary.opening(),
+                evidence: CueTerminatedBlockCueEvidence::Boundary(boundary.identifier()),
+            },
+            content: boundary.interior(),
+            closing: boundary.closing(),
+            children: discovered
+                .children()
+                .iter()
+                .map(Self::from_boundary)
+                .collect(),
+        }
+    }
+}
+
+fn matching_cue_rule<'rules>(
+    source: &str,
+    byte_offset: usize,
+    rules: &'rules [CueTerminationRule],
+) -> Option<&'rules CueTerminationRule> {
+    rules
+        .iter()
+        .filter(|rule| cue_matches(source, byte_offset, rule))
+        .max_by_key(|rule| rule.cue.len())
+}
+
+fn cue_matches(source: &str, byte_offset: usize, rule: &CueTerminationRule) -> bool {
+    let Some(after_cue) = byte_offset.checked_add(rule.cue.len()) else {
+        return false;
+    };
+    if source.get(byte_offset..after_cue) != Some(rule.cue()) {
+        return false;
+    }
+    let before_is_word = source[..byte_offset]
+        .chars()
+        .next_back()
+        .is_some_and(|character| rule.word_characters.matches(character));
+    let after_is_word = source[after_cue..]
+        .chars()
+        .next()
+        .is_some_and(|character| rule.word_characters.matches(character));
+    !before_is_word && !after_is_word
+}
+
+fn ensure_rule_spelling_is_disjoint(
+    profile: &SealedTokenProfile,
+    boundaries: &SealedBoundaryDiscoveryConfiguration,
+    rule: CueTerminationRuleIdentifier,
+    spelling: &str,
+) -> Result<(), BlockDiscoveryError> {
+    for context in boundaries.contexts() {
+        for trigger in boundaries.active_triggers(context)?.triggers() {
+            if trigger_spelling_overlaps(profile.definition(*trigger)?, spelling) {
+                return Err(BlockDiscoveryError::CueRuleTriggerOverlap {
+                    rule,
+                    trigger: *trigger,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn trigger_spelling_overlaps(definition: &crate::TriggerDefinition, spelling: &str) -> bool {
+    let prefixes_overlap = |other: &str| spelling.starts_with(other) || other.starts_with(spelling);
+    match &definition.trigger {
+        Trigger::Boundary { opening, closing } => {
+            prefixes_overlap(opening) || prefixes_overlap(closing)
+        }
+        Trigger::Carrier { opening, .. } => prefixes_overlap(opening),
+        Trigger::LineComment { opening } => prefixes_overlap(opening),
+        Trigger::Whitespace { .. } => spelling.chars().next().is_some_and(char::is_whitespace),
+        Trigger::Application { .. }
+        | Trigger::Punctuation { .. }
+        | Trigger::LeadingCharacterClass { .. } => false,
     }
 }
 
@@ -438,6 +828,45 @@ pub enum BlockDiscoveryError {
 
     #[error("prefix rule for boundary {boundary:?} is not active in any discovery context")]
     UnconfiguredPrefixBoundary { boundary: TriggerIdentifier },
+
+    #[error("cue-termination rule {rule:?} is declared more than once")]
+    DuplicateCueRule { rule: CueTerminationRuleIdentifier },
+
+    #[error("cue-termination rules are not in canonical identifier order")]
+    NoncanonicalCueRuleOrder,
+
+    #[error("cue-termination rules {first:?} and {second:?} have the same cue spelling")]
+    DuplicateCueSpelling {
+        first: CueTerminationRuleIdentifier,
+        second: CueTerminationRuleIdentifier,
+    },
+
+    #[error("cue-termination rule {rule:?} has an empty cue")]
+    EmptyCue { rule: CueTerminationRuleIdentifier },
+
+    #[error("cue-termination rule {rule:?} has an empty termination spelling")]
+    EmptyTermination { rule: CueTerminationRuleIdentifier },
+
+    #[error("cue-termination rule {rule:?} has a noncanonical word alphabet")]
+    NoncanonicalCueAlphabet { rule: CueTerminationRuleIdentifier },
+
+    #[error("cue-termination rule {rule:?} contains a cue character outside its word alphabet")]
+    CueOutsideWordAlphabet { rule: CueTerminationRuleIdentifier },
+
+    #[error("cue-termination rule {rule:?} overlaps boundary-discovery trigger {trigger:?}")]
+    CueRuleTriggerOverlap {
+        rule: CueTerminationRuleIdentifier,
+        trigger: TriggerIdentifier,
+    },
+
+    #[error(
+        "cue-termination rule {rule:?} opened at byte {} but no termination was found",
+        cue.start()
+    )]
+    UnclosedCueTerminatedBlock {
+        rule: CueTerminationRuleIdentifier,
+        cue: SourceBound,
+    },
 }
 
 #[cfg(test)]

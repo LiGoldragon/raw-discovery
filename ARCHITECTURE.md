@@ -12,8 +12,8 @@ The current source-bounded mechanism is implemented in `boundary.rs` and
 `block_tree.rs`:
 
 - `SourceBound` is one validated half-open range in a particular source text.
-- `BlockCue` records the opening source bound and the trigger definition that
-  matched it.
+- `BlockCue<Evidence>` records the opening source bound and the sealed
+  boundary or cue-to-termination rule that matched it.
 - `BlockPrefix` records an optional configured prefix word and separator.
 - `BlockTree` is the universal untyped projection: complete `source_bound`,
   `cue`, optional `prefix`, `content_bound`, optional `closing_bound`, and
@@ -46,25 +46,26 @@ This pass finds boundaries only. It does not parse a full grammar and does not
 construct a preliminary token stream. Typed parsing revisits the bounded content
 in pass 2 under an expected structural type.
 
-The current live traversal is delimiter-based. Its balanced-scan core is
-production code in `discover_delimited_with`; only a public convenience wrapper
-around that core is test-only.
+The live traversal has both delimiter and cue-to-termination entry points.
+Both use the balanced-scan core in `discover_delimited_with`; only a public
+convenience wrapper around the delimiter core is test-only.
 
 ## Cues and language rule data
 
-A cue is evidence that a block begins. In the currently wired
-`DiscoveredBlock`, `BlockCue` represents a configured opening boundary. Protos
-family prefixes may be attached to those openings through data-driven prefix
-rules.
+A cue is evidence that a block begins. In `DiscoveredBlock`, `BlockCue`
+represents a configured opening boundary. Protos-family prefixes may be
+attached to those openings through data-driven prefix rules.
 
-The approved model also requires language-specific cue-to-termination rules.
-For Rust, an inclusive cue such as `struct` opens a block, and Rust termination
-rules find its end while recursively discovering inner blocks. That Rust
-cue-to-termination variant is not wired yet. It must extend the shared
-source-bounded `BlockTree` mechanism rather than install a Rust parser or revive
-the older recognizer as a second evaluator.
+`CueTerminatedBlockDiscoveryConfiguration` adds archiveable complete-word cue
+and exact termination rules to the same sealed delimiter configuration.
+`DiscoveredCueTerminatedBlockTree` treats the cue as inclusive, observes the
+termination only at the cue's source level, and recursively carries every
+delimited child with exact source bounds. A Rust `struct`/`;` rule is the first
+production-directed witness. This is boundary discovery, not a Rust grammar:
+the rule records neither declarations nor fields, and it allocates no
+identities.
 
-Strings and comments remain opaque to both delimiter balancing and future
+Configured strings and comments remain opaque to both delimiter balancing and
 cue-to-termination scanning.
 
 ## Profiles and longest match
@@ -98,13 +99,13 @@ and source extent rather than archived or hashed as portable structure.
 
 - `src/boundary.rs` — `SourceBound`, configured recursive boundary traversal,
   carrier opacity, and the live balanced-scan core.
-- `src/block_tree.rs` — `BlockCue`, `BlockTree`, source-bounded runtime nodes,
-  prefix rules, and discovery configuration.
+- `src/block_tree.rs` — `BlockCue`, `BlockTree`, source-bounded delimiter and
+  cue-terminated runtime nodes, prefix rules, and discovery configurations.
 - `src/profile.rs` — canonical trigger/profile data and sealing.
 - `src/block.rs`, `src/recognizer.rs`, `src/error.rs` — the older span-free NOTA
   compatibility recognizer; not the target pass-1 tree.
-- `tests/block_tree.rs`, `tests/boundary_discovery.rs` — the current
-  source-bounded witnesses.
+- `tests/block_tree.rs`, `tests/boundary_discovery.rs`,
+  `tests/rust_boundary_discovery.rs` — the current source-bounded witnesses.
 
 This micro-repository is the canonical producer. Consumers take exact immutable
 revisions through the producer-first release train.
