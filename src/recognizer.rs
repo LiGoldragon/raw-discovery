@@ -3,12 +3,13 @@
 //! target-language boundary.
 //!
 //! The compatibility recognizer discovers established NOTA delimiter nesting,
-//! right-associative dot-application, pipe text, and bare atoms without
+//! right-associative dot-application, bare angle applications, curly text, and
+//! bare atoms without
 //! classifying meaning. Its cursor consults a sealed trigger set and never
 //! produces a preliminary token stream. New textual surfaces use the same
 //! boundary-profile machinery through their sealed structural forms.
 
-use crate::block::{Atom, Block, Delimiter, PipeText};
+use crate::block::{ApplicationForm, Atom, Block, CurlyText, Delimiter};
 use crate::boundary::{BoundaryReader, BoundarySide, TriggerMatch, TriggerMatchKind};
 use crate::error::{FoundClose, RecognizeError, SourcePosition};
 use crate::profile::{RawProfile, SealedTokenProfile, SealedTriggerSet, TokenProfileError};
@@ -200,31 +201,45 @@ impl<'source> SourceReading<'source> {
         }
     }
 
-    /// Read one object: a primary object and, when a glued period follows, the
-    /// dot-application binding it to the remainder. Right-associative:
-    /// `A.B.C = App(A, App(B, C))`. A period binds only when glued to both its
-    /// head and its payload.
+    /// Read one object: a primary object and, when a glued period or adjacent
+    /// angle group follows, the application binding it to its payload. Dots are
+    /// right-associative: `A.B.C = App(A, App(B, C))`.
     fn read_object(&mut self) -> Result<Block, RecognizeError> {
         let head = self.read_primary()?;
         let Some(application) = self.matched_trigger()? else {
             return Ok(head);
         };
-        if !matches!(application.kind(), TriggerMatchKind::Application) {
-            return Ok(head);
+        if matches!(application.kind(), TriggerMatchKind::Application) {
+            let dot = self.cursor.position();
+            self.consume_to(application.end());
+            if self.at_angle_opening()? || !self.at_primary_start()? {
+                return Err(RecognizeError::DanglingApplication { position: dot });
+            }
+            let payload = self.read_object()?;
+            return Ok(Block::Application {
+                form: ApplicationForm::Dot,
+                head: Box::new(head),
+                payload: Box::new(payload),
+            });
         }
-        let dot = self.cursor.position();
-        self.consume_to(application.end());
-        if !self.at_primary_start()? {
-            return Err(RecognizeError::DanglingApplication { position: dot });
+        if matches!(
+            application.kind(),
+            TriggerMatchKind::Boundary(BoundarySide::Opening)
+        ) && self.compatibility_delimiter(&application)? == Delimiter::Angle
+        {
+            let start = self.cursor.position();
+            self.consume_to(application.end());
+            let payload = self.read_delimited(Delimiter::Angle, application.identifier(), start)?;
+            return Ok(Block::Application {
+                form: ApplicationForm::Angle,
+                head: Box::new(head),
+                payload: Box::new(payload),
+            });
         }
-        let payload = self.read_object()?;
-        Ok(Block::Application {
-            head: Box::new(head),
-            payload: Box::new(payload),
-        })
+        Ok(head)
     }
 
-    /// Read a single primary object: a delimited block, a pipe-text block, or a
+    /// Read a single primary object: a delimited block, a curly-text block, or a
     /// bare atom. A primary never consumes a trailing dot-application; that is
     /// [`read_object`](SourceReading::read_object)'s job. A leading period has
     /// no head and is rejected.
@@ -233,7 +248,7 @@ impl<'source> SourceReading<'source> {
             Some(matched) if matches!(matched.kind(), TriggerMatchKind::Carrier) => {
                 let text = matched.body().unwrap_or_default().to_owned();
                 self.consume_to(matched.end());
-                Ok(Block::PipeText(PipeText::new(text)))
+                Ok(Block::CurlyText(CurlyText::new(text)))
             }
             Some(matched)
                 if matches!(
@@ -266,17 +281,6 @@ impl<'source> SourceReading<'source> {
                 source: TokenProfileError::UnsupportedCompatibilityTrigger(matched.identifier()),
                 position: self.cursor.position(),
             }),
-            // A misplaced pipe-close (`|)`) at object position would make
-            // `read_atom` return a zero-width atom without advancing, so the
-            // enclosing loop would spin forever, growing the vector until memory
-            // is exhausted. Reject it so the reader always makes progress on
-            // malformed input.
-            None if self.peek() == Some('|') && self.at_pipe_close() => {
-                Err(RecognizeError::UnexpectedClose {
-                    found: self.found_pipe_close(),
-                    position: self.cursor.position(),
-                })
-            }
             Some(_) | None => self.read_atom(),
         }
     }
@@ -295,7 +299,6 @@ impl<'source> SourceReading<'source> {
             None => match self.peek() {
                 None => false,
                 Some(character) if Delimiter::from_closing(character).is_some() => false,
-                Some(_) if self.at_pipe_close() => false,
                 Some(_) => true,
             },
         })
@@ -356,18 +359,19 @@ impl<'source> SourceReading<'source> {
         Ok(Block::Atom(Atom::new(text)))
     }
 
-    fn at_pipe_close(&self) -> bool {
-        self.peek() == Some('|') && matches!(self.found_pipe_close(), FoundClose::Glyph(')'))
+    fn at_angle_opening(&self) -> Result<bool, RecognizeError> {
+        Ok(self.matched_trigger()?.is_some_and(|matched| {
+            matches!(
+                matched.kind(),
+                TriggerMatchKind::Boundary(BoundarySide::Opening)
+            ) && self
+                .compatibility_delimiter(&matched)
+                .is_ok_and(|delimiter| delimiter == Delimiter::Angle)
+        }))
     }
 
     fn found_close(&self) -> FoundClose {
         self.peek()
-            .map(FoundClose::Glyph)
-            .unwrap_or(FoundClose::EndOfInput)
-    }
-
-    fn found_pipe_close(&self) -> FoundClose {
-        self.peek_next()
             .map(FoundClose::Glyph)
             .unwrap_or(FoundClose::EndOfInput)
     }
@@ -394,9 +398,15 @@ impl<'source> SourceReading<'source> {
 
     fn recognize_profile_error(&self, error: TokenProfileError) -> RecognizeError {
         match error {
-            TokenProfileError::UnclosedCarrier { .. } => RecognizeError::UnclosedPipeText {
+            TokenProfileError::UnclosedCarrier { .. }
+            | TokenProfileError::UnclosedCurlyText { .. } => RecognizeError::UnclosedCurlyText {
                 position: self.cursor.position(),
             },
+            TokenProfileError::InvalidCurlyTextEscape { .. } => {
+                RecognizeError::InvalidCurlyTextEscape {
+                    position: self.cursor.position(),
+                }
+            }
             TokenProfileError::ForbiddenBareCharacter { character, .. } => {
                 RecognizeError::UnsupportedGlyph {
                     glyph: character,
@@ -434,12 +444,6 @@ impl<'source> SourceReading<'source> {
 
     fn peek(&self) -> Option<char> {
         self.source[self.cursor.byte_offset..].chars().next()
-    }
-
-    fn peek_next(&self) -> Option<char> {
-        let mut characters = self.source[self.cursor.byte_offset..].chars();
-        characters.next()?;
-        characters.next()
     }
 
     fn bump(&mut self) -> Option<char> {

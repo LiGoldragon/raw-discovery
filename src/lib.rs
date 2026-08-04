@@ -15,11 +15,11 @@
 //! ## What is discovered
 //!
 //! - [`Block`] — the raw node: [`Delimited`](Block::Delimited),
-//!   [`Application`](Block::Application), [`PipeText`], [`Atom`]. Application is
+//!   [`Application`](Block::Application), [`CurlyText`], [`Atom`]. Application is
 //!   a **designed-explicit** variant: nota expresses it structurally through a
 //!   dotted head, and the accepted design promotes it to a first-class node so
 //!   the raw layer names what nota leaves implicit.
-//! - [`Delimiter`] — `( )`, `[ ]`, `{ }`.
+//! - [`Delimiter`] — `( )`, `[ ]`, `{ }`, `< >`.
 //! - The dotted primitives: [`Atom::split_at_first_dot`] /
 //!   [`Atom::split_text_at_first_dot`] (split) and [`Block::dotted_text`] (join).
 //! - [`AtomCase`] — the capitalization classifier, exposed as **data** with no
@@ -47,7 +47,7 @@ mod error;
 mod profile;
 mod recognizer;
 
-pub use block::{Atom, AtomCase, Block, Delimiter, Document, PipeText};
+pub use block::{ApplicationForm, Atom, AtomCase, Block, CurlyText, Delimiter, Document};
 pub use block_tree::{
     BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
     BlockTreeDiscoveryConfiguration, CueTerminatedBlockCueEvidence,

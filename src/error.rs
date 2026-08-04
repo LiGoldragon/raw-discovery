@@ -40,7 +40,7 @@ impl fmt::Display for FoundClose {
 
 /// Every way raw recognition can reject a source. The recognizer discovers
 /// structure and never classifies meaning, so every variant here is a
-/// *structural* fault — an unbalanced delimiter, a dangling dot-application, or
+/// *structural* fault — an unbalanced delimiter, a dangling application, or
 /// a glyph the active profile's [`GlyphSet`](crate::GlyphSet) does not admit —
 /// never a "wrong type" or "unknown name".
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -59,9 +59,14 @@ pub enum RecognizeError {
         position: SourcePosition,
     },
 
-    /// A `(|` pipe-text block opened here was never closed by `|)`.
-    #[error("unclosed `(|` pipe text opened at {}:{}", .position.line, .position.column)]
-    UnclosedPipeText { position: SourcePosition },
+    /// A `“` curly-text block opened here was never closed by its balanced
+    /// matching `”`.
+    #[error("unclosed curly text opened at {}:{}", .position.line, .position.column)]
+    UnclosedCurlyText { position: SourcePosition },
+
+    /// A curly-text escape was not one of `\“`, `\”`, or `\\`.
+    #[error("invalid curly-text escape at {}:{}", .position.line, .position.column)]
+    InvalidCurlyTextEscape { position: SourcePosition },
 
     /// A period appeared at object position with no head to its left. A dot
     /// binds a head to a following payload, so it can never start an object.

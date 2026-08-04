@@ -1122,6 +1122,7 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
                 closing,
                 escape,
             } => self.match_carrier(identifier, opening, closing, escape.as_deref()),
+            Trigger::CurlyText => self.match_curly_text(identifier),
             Trigger::Whitespace { .. } => Ok(self.match_character_class(
                 identifier,
                 TriggerMatchKind::Trivia,
@@ -1221,6 +1222,72 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
         })
     }
 
+    fn match_curly_text(
+        &self,
+        identifier: TriggerIdentifier,
+    ) -> Result<Option<TriggerMatch>, TokenProfileError> {
+        const OPENING: char = '“';
+        const CLOSING: char = '”';
+        if !self.remaining().starts_with(OPENING) {
+            return Ok(None);
+        }
+
+        let mut cursor = self.byte_offset + OPENING.len_utf8();
+        let mut body = String::new();
+        let mut depth = 1_usize;
+        while cursor < self.bound.end {
+            let remaining = &self.source[cursor..self.bound.end];
+            let character = remaining
+                .chars()
+                .next()
+                .expect("cursor remains inside source");
+            match character {
+                '\\' => {
+                    let escape_offset = cursor;
+                    cursor += character.len_utf8();
+                    let Some(escaped) = self.source[cursor..self.bound.end].chars().next() else {
+                        return Err(TokenProfileError::InvalidCurlyTextEscape {
+                            byte_offset: escape_offset,
+                        });
+                    };
+                    if !matches!(escaped, OPENING | CLOSING | '\\') {
+                        return Err(TokenProfileError::InvalidCurlyTextEscape {
+                            byte_offset: escape_offset,
+                        });
+                    }
+                    body.push(escaped);
+                    cursor += escaped.len_utf8();
+                }
+                OPENING => {
+                    depth += 1;
+                    body.push(character);
+                    cursor += character.len_utf8();
+                }
+                CLOSING => {
+                    cursor += character.len_utf8();
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(Some(TriggerMatch {
+                            identifier,
+                            kind: TriggerMatchKind::Carrier,
+                            start: self.byte_offset,
+                            end: cursor,
+                            body: Some(remove_common_indentation(body)),
+                        }));
+                    }
+                    body.push(character);
+                }
+                _ => {
+                    body.push(character);
+                    cursor += character.len_utf8();
+                }
+            }
+        }
+        Err(TokenProfileError::UnclosedCurlyText {
+            byte_offset: self.byte_offset,
+        })
+    }
+
     fn match_character_class(
         &self,
         identifier: TriggerIdentifier,
@@ -1259,6 +1326,34 @@ impl<'source, 'profile> BoundaryReader<'source, 'profile> {
             (None, right) => right,
         }
     }
+}
+
+fn remove_common_indentation(text: String) -> String {
+    if !text.contains('\n') {
+        return text;
+    }
+    let mut lines = text.lines().collect::<Vec<_>>();
+    if lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    if lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    let indentation = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.chars()
+                .take_while(|character| matches!(character, ' ' | '\t'))
+                .count()
+        })
+        .min()
+        .unwrap_or(0);
+    lines
+        .into_iter()
+        .map(|line| line.chars().skip(indentation).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

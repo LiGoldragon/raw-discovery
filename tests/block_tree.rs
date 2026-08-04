@@ -492,8 +492,8 @@ fn children_are_isolated_to_their_parent_content_bound() {
 }
 
 #[test]
-fn carriers_and_comments_remain_opaque_to_block_discovery() {
-    let source = "( before (| ] { still carrier |) ;; [not a child]\n [actual] )";
+fn curly_text_and_comments_remain_opaque_to_block_discovery() {
+    let source = "( before “ ] { still text ” ;; [not a child]\n [actual] )";
     let tree = discover(source);
     let root = tree.root_blocks().first().expect("root");
 

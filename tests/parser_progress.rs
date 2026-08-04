@@ -1,8 +1,6 @@
-//! The recognizer must always terminate. A misplaced pipe-close (`|)`) at object
-//! position must not spin the atom reader on a zero-width atom (which would grow
-//! the block vector unboundedly). Ported from nota next-gen
-//! `tests/parser_progress.rs`; each recognition runs in a watchdog thread so a
-//! regression hangs the worker, not the test runner.
+//! The recognizer must always terminate on malformed structural input. Each
+//! recognition runs in a watchdog thread so a regression hangs the worker, not
+//! the test runner.
 
 use std::sync::mpsc;
 use std::thread;
@@ -21,15 +19,15 @@ fn recognition_terminates(input: &str) -> bool {
 }
 
 #[test]
-fn recognition_terminates_on_stray_pipe_close() {
+fn recognition_terminates_on_malformed_curly_or_angle_input() {
     for input in [
-        "(a |])",
-        "[a |] b]",
-        "(|])",
-        "( |] )",
-        "{ |} }",
-        "( |) )",
-        "(record [|]x)",
+        "(a >)",
+        "[a <] b]",
+        "“]",
+        "( “bad \\q escape” )",
+        "{ < > }",
+        "( Vector.<Ordered> )",
+        "(record <])",
     ] {
         assert!(
             recognition_terminates(input),
@@ -39,24 +37,14 @@ fn recognition_terminates_on_stray_pipe_close() {
 }
 
 #[test]
-fn pipe_close_evidence_distinguishes_end_of_input_from_a_closing_glyph() {
-    let truncated = Recognizer::standard()
-        .recognize("|")
-        .expect("a bare pipe at end of input remains an atom");
-    assert_eq!(
-        truncated
-            .root_object_at(0)
-            .and_then(|block| block.demote_to_string()),
-        Some("|")
-    );
-
+fn unmatched_angle_close_is_rejected_with_closing_glyph_evidence() {
     let error = Recognizer::standard()
-        .recognize("|)")
-        .expect_err("a stray pipe close is rejected");
+        .recognize(">")
+        .expect_err("a stray angle close is rejected");
     assert!(matches!(
         error,
         RecognizeError::UnexpectedClose {
-            found: FoundClose::Glyph(')'),
+            found: FoundClose::Glyph('>'),
             ..
         }
     ));

@@ -779,6 +779,7 @@ fn trigger_spelling_overlaps(definition: &crate::TriggerDefinition, spelling: &s
             prefixes_overlap(opening) || prefixes_overlap(closing)
         }
         Trigger::Carrier { opening, .. } => prefixes_overlap(opening),
+        Trigger::CurlyText => prefixes_overlap("“"),
         Trigger::LineComment { opening } => prefixes_overlap(opening),
         Trigger::Whitespace { .. } => spelling.chars().next().is_some_and(char::is_whitespace),
         Trigger::Application { .. }
@@ -1027,13 +1028,13 @@ mod tests {
         let root = BoundaryDiscoveryContextIdentifier::new(97);
         let child = BoundaryDiscoveryContextIdentifier::new(98);
         let parenthesis = TriggerIdentifier::new(0);
-        let pipe = TriggerIdentifier::new(4);
+        let curly_text = TriggerIdentifier::new(4);
         let configuration = BlockTreeDiscoveryConfiguration::new(
             BoundaryDiscoveryConfiguration::new(
                 root,
                 vec![
                     BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![parenthesis])),
-                    BoundaryDiscoveryContext::new(child, TriggerSet::new(vec![pipe])),
+                    BoundaryDiscoveryContext::new(child, TriggerSet::new(vec![curly_text])),
                 ],
                 vec![BoundaryDiscoveryTransition::new(root, parenthesis, child)],
             ),
@@ -1054,7 +1055,7 @@ mod tests {
                 .active_triggers(child)
                 .expect("child active set")
                 .triggers(),
-            &[pipe]
+            &[curly_text]
         );
 
         let unknown = BoundaryDiscoveryContextIdentifier::new(99);

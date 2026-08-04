@@ -11,7 +11,7 @@ const PARENTHESIS: TriggerIdentifier = TriggerIdentifier::new(0);
 const SQUARE: TriggerIdentifier = TriggerIdentifier::new(1);
 const BRACE: TriggerIdentifier = TriggerIdentifier::new(2);
 const APPLICATION: TriggerIdentifier = TriggerIdentifier::new(3);
-const PIPE_TEXT: TriggerIdentifier = TriggerIdentifier::new(4);
+const CURLY_TEXT: TriggerIdentifier = TriggerIdentifier::new(4);
 const WHITESPACE: TriggerIdentifier = TriggerIdentifier::new(5);
 const COMMENT: TriggerIdentifier = TriggerIdentifier::new(6);
 
@@ -30,7 +30,7 @@ fn discovery_triggers() -> TriggerSet {
         PARENTHESIS,
         SQUARE,
         BRACE,
-        PIPE_TEXT,
+        CURLY_TEXT,
         WHITESPACE,
         COMMENT,
     ])
@@ -47,7 +47,7 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
     let profile = profile();
     let discovery = discovery(&profile);
     let active = active(&profile);
-    let source = "(outer [inner (| ] ) } |)] tail) after";
+    let source = "(outer [inner “ ] ) } ”] tail) after";
     let mut parent = BoundaryReader::new(source, &profile);
 
     let outer = parent
@@ -61,7 +61,7 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
     );
     assert_eq!(
         parent.source_between(outer.interior().start(), outer.interior().end()),
-        "outer [inner (| ] ) } |)] tail"
+        "outer [inner “ ] ) } ”] tail"
     );
 
     let mut interior =
@@ -76,7 +76,7 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
         .expect("nested boundary is discovered inside the explicit bound");
     assert_eq!(
         interior.source_between(square.interior().start(), square.interior().end()),
-        "inner (| ] ) } |)"
+        "inner “ ] ) } ”"
     );
 }
 
@@ -84,7 +84,7 @@ fn enclosing_close_is_found_before_the_interior_is_read() {
 fn expected_group_opener_precedes_its_interior_discovery_context() {
     let profile = profile();
     let discovery = discovery(&profile);
-    let source = "(|literal|)tail";
+    let source = "(“literal”)tail";
     let mut reader = BoundaryReader::new(source, &profile);
 
     let outer = reader
@@ -93,7 +93,7 @@ fn expected_group_opener_precedes_its_interior_discovery_context() {
 
     assert_eq!(
         reader.source_between(outer.interior().start(), outer.interior().end()),
-        "|literal|"
+        "“literal”"
     );
     assert_eq!(reader.remaining(), "tail");
 }
@@ -116,10 +116,10 @@ fn same_boundary_nesting_is_balanced_before_recursion() {
 }
 
 #[test]
-fn carriers_are_opaque_while_the_enclosing_close_is_sought() {
+fn curly_text_is_opaque_while_the_enclosing_close_is_sought() {
     let profile = profile();
     let discovery = discovery(&profile);
-    let source = r#"{before (| } ] ) \|) still carried |) after}tail"#;
+    let source = r#"{before “ } ] ) \” still carried ” after}tail"#;
     let mut reader = BoundaryReader::new(source, &profile);
 
     let outer = reader
@@ -128,7 +128,7 @@ fn carriers_are_opaque_while_the_enclosing_close_is_sought() {
 
     assert_eq!(
         reader.source_between(outer.interior().start(), outer.interior().end()),
-        r#"before (| } ] ) \|) still carried |) after"#
+        r#"before “ } ] ) \” still carried ” after"#
     );
     assert_eq!(reader.remaining(), "tail");
 }

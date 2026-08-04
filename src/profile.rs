@@ -63,11 +63,11 @@ impl RawProfile {
     }
 
     pub const fn standard() -> Self {
-        Self::new(ProfileRevision::new(1), GlyphSet::Standard)
+        Self::new(ProfileRevision::new(2), GlyphSet::Standard)
     }
 
     pub const fn nomos_extended() -> Self {
-        Self::new(ProfileRevision::new(1), GlyphSet::NomosExtended)
+        Self::new(ProfileRevision::new(2), GlyphSet::NomosExtended)
     }
 
     pub const fn revision(self) -> ProfileRevision {
@@ -232,6 +232,11 @@ pub enum Trigger {
         closing: String,
         escape: Option<String>,
     },
+    /// The one family-owned balanced curly-text carrier: `“ … ”`.
+    ///
+    /// Nested quote pairs remain literal text. Only `\“`, `\”`, and `\\`
+    /// escape one otherwise-unbalanced quote or backslash.
+    CurlyText,
     Whitespace {
         canonical_spelling: String,
     },
@@ -258,6 +263,7 @@ impl Trigger {
             Self::Boundary { opening, closing } => vec![opening, closing],
             Self::Application { glyph } | Self::Punctuation { glyph } => vec![glyph],
             Self::Carrier { .. }
+            | Self::CurlyText
             | Self::Whitespace { .. }
             | Self::LineComment { .. }
             | Self::LeadingCharacterClass { .. } => Vec::new(),
@@ -307,6 +313,7 @@ impl Trigger {
                 }
                 Ok(())
             }
+            Self::CurlyText => Ok(()),
             Self::LineComment { opening } => non_empty(opening, TriggerTextRole::TriviaOpening),
             Self::Whitespace { canonical_spelling } => {
                 non_empty(canonical_spelling, TriggerTextRole::CanonicalSpelling)
@@ -314,6 +321,62 @@ impl Trigger {
             Self::LeadingCharacterClass { .. } => Ok(()),
         }
     }
+
+    /// Render `body` through this text-carrier trigger when it owns a canonical
+    /// emitted representation.
+    pub fn render_text_carrier(&self, body: &str) -> Option<String> {
+        match self {
+            Self::Carrier {
+                opening,
+                closing,
+                escape,
+            } => {
+                let body = escape.as_ref().map_or_else(
+                    || body.to_owned(),
+                    |escape| body.replace(closing, &format!("{escape}{closing}")),
+                );
+                Some(format!("{opening}{body}{closing}"))
+            }
+            Self::CurlyText => Some(format!("“{}”", escape_curly_text(body))),
+            Self::Boundary { .. }
+            | Self::Application { .. }
+            | Self::Punctuation { .. }
+            | Self::Whitespace { .. }
+            | Self::LineComment { .. }
+            | Self::LeadingCharacterClass { .. } => None,
+        }
+    }
+}
+
+fn escape_curly_text(body: &str) -> String {
+    let characters = body.char_indices().collect::<Vec<_>>();
+    let mut matched = vec![false; characters.len()];
+    let mut openings = Vec::new();
+    for (index, (_, character)) in characters.iter().enumerate() {
+        match character {
+            '“' => openings.push(index),
+            '”' => {
+                if let Some(opening) = openings.pop() {
+                    matched[opening] = true;
+                    matched[index] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut escaped = String::new();
+    for (index, (_, character)) in characters.iter().enumerate() {
+        if *character == '\\' {
+            escaped.push('\\');
+            escaped.push('\\');
+        } else if matches!(character, '“' | '”') && !matched[index] {
+            escaped.push('\\');
+            escaped.push(*character);
+        } else {
+            escaped.push(*character);
+        }
+    }
+    escaped
 }
 
 /// An identified trigger stored in profile data.
@@ -408,11 +471,7 @@ impl TokenProfileData {
             },
             TriggerDefinition {
                 identifier: TriggerIdentifier::new(4),
-                trigger: Trigger::Carrier {
-                    opening: "(|".to_owned(),
-                    closing: "|)".to_owned(),
-                    escape: Some("\\".to_owned()),
-                },
+                trigger: Trigger::CurlyText,
             },
             TriggerDefinition {
                 identifier: TriggerIdentifier::new(5),
@@ -426,16 +485,23 @@ impl TokenProfileData {
                     opening: ";;".to_owned(),
                 },
             },
+            TriggerDefinition {
+                identifier: TriggerIdentifier::new(7),
+                trigger: Trigger::Boundary {
+                    opening: "<".to_owned(),
+                    closing: ">".to_owned(),
+                },
+            },
         ];
         let forbidden_bare_characters = if profile.glyphs().admits_dollar_sigil() {
-            CharacterSet::from_text("\"")
+            CharacterSet::from_text("\"“”<>|")
         } else {
-            CharacterSet::from_text("\"$")
+            CharacterSet::from_text("\"“”<>|$")
         };
         Self::new(
             profile.revision(),
             definitions,
-            TriggerSet::new((0..=6).map(TriggerIdentifier::new).collect()),
+            TriggerSet::new((0..=7).map(TriggerIdentifier::new).collect()),
             forbidden_bare_characters,
         )
     }
@@ -452,7 +518,7 @@ impl HashDomain for TokenProfileDomain {
     fn separation() -> DomainSeparation {
         DomainSeparation::Contextual {
             context: "raw-discovery 2026 recursive token profile",
-            layout: LayoutVersion::new(3),
+            layout: LayoutVersion::new(4),
         }
     }
 }
@@ -552,6 +618,7 @@ impl SealedTokenProfile {
                 self.definition(*identifier)?.trigger,
                 Trigger::Boundary { .. }
                     | Trigger::Carrier { .. }
+                    | Trigger::CurlyText
                     | Trigger::Whitespace { .. }
                     | Trigger::LineComment { .. }
             ) {
@@ -689,6 +756,7 @@ impl SealedTokenProfile {
             Trigger::Carrier {
                 opening, closing, ..
             } => Some((opening, closing)),
+            Trigger::CurlyText => Some(("“", "”")),
             _ => None,
         }
     }
@@ -820,6 +888,10 @@ pub enum TokenProfileError {
         identifier: TriggerIdentifier,
         byte_offset: usize,
     },
+    #[error("curly text opened at byte {byte_offset} but never closed")]
+    UnclosedCurlyText { byte_offset: usize },
+    #[error("invalid curly-text escape at byte {byte_offset}")]
+    InvalidCurlyTextEscape { byte_offset: usize },
     #[error("bare atom contains forbidden character `{character}` at byte {byte_offset}")]
     ForbiddenBareCharacter { character: char, byte_offset: usize },
     #[error("content identity failed: {0}")]

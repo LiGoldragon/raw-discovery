@@ -18,8 +18,8 @@ impl HashDomain for StandardDocumentCompatibilityDomain {
 }
 
 const STANDARD_DOCUMENT_ARCHIVE: [u8; 32] = [
-    0x68, 0x7b, 0x2c, 0xbe, 0xe0, 0x6f, 0x2c, 0x20, 0x2e, 0xea, 0x1b, 0xd6, 0x54, 0xb9, 0x82, 0x28,
-    0x19, 0x68, 0x5f, 0x89, 0x4e, 0x86, 0x34, 0xe2, 0x94, 0xf3, 0x5f, 0x47, 0x1f, 0x0b, 0x33, 0x00,
+    0xab, 0x97, 0xaa, 0x72, 0xf8, 0xea, 0x75, 0xf7, 0x66, 0x2b, 0xe6, 0xda, 0x16, 0xec, 0x01, 0x8d,
+    0x55, 0x9b, 0x17, 0xd6, 0xb2, 0x69, 0x35, 0x10, 0x98, 0x9d, 0xbe, 0x1c, 0xd1, 0xb6, 0xf4, 0x6f,
 ];
 
 fn round_trips(source: &str) {
@@ -39,9 +39,9 @@ fn round_trips(source: &str) {
 #[test]
 fn a_nested_document_round_trips_through_rkyv() {
     // Every block shape at once: delimiters nested three deep, a
-    // right-associative dotted chain, pipe text, and bare atoms.
+    // right-associative dotted chain, curly text, angle application, and bare atoms.
     round_trips(
-        "Public.Newtype.( CommitSequence [ rkyv.Archive Clone ] (|literal ] body|) ) trailing",
+        "Public.Newtype.( CommitSequence [ rkyv.Archive Clone ] “literal ] body” Vector<Ordered> ) trailing",
     );
 }
 
@@ -49,7 +49,7 @@ fn a_nested_document_round_trips_through_rkyv() {
 fn established_standard_document_archive_is_an_absolute_lock() {
     let document = Recognizer::standard()
         .recognize(
-            "Public.Newtype.( CommitSequence [ rkyv.Archive Clone ] (|literal ] body|) ) trailing",
+            "Public.Newtype.( CommitSequence [ rkyv.Archive Clone ] “literal ] body” Vector<Ordered> ) trailing",
         )
         .expect("standard document");
     let bytes = document.to_archive_bytes().expect("archive");
@@ -57,7 +57,7 @@ fn established_standard_document_archive_is_an_absolute_lock() {
     assert_eq!(
         identity.bytes(),
         &STANDARD_DOCUMENT_ARCHIVE,
-        "existing Block and Document archive bytes moved"
+        "redesigned standard Block and Document archive bytes moved"
     );
 }
 
@@ -70,7 +70,8 @@ fn each_block_shape_round_trips() {
         "{a b c}",
         "head.payload",
         "a.b.c",
-        "(|pipe text|)",
+        "“curly text”",
+        "Vector<Ordered>",
     ] {
         round_trips(source);
     }

@@ -4,7 +4,7 @@
 //! constraint — not the typed codec (float/string/vector/map decoding), which
 //! belongs to nota's codec and the future structural-codec.
 
-use raw_discovery::{Block, Recognizer};
+use raw_discovery::{ApplicationForm, Block, Recognizer};
 
 fn recognize_single(source: &str) -> Block {
     let document = Recognizer::standard()
@@ -21,8 +21,31 @@ fn recognize_single(source: &str) -> Block {
 fn dot_binds_head_to_payload_as_one_application() {
     let block = recognize_single("Variant.Data");
     let (head, payload) = block.as_application().expect("dot-application");
+    assert_eq!(block.application_form(), Some(ApplicationForm::Dot));
     assert_eq!(head.demote_to_string(), Some("Variant"));
     assert_eq!(payload.demote_to_string(), Some("Data"));
+}
+
+#[test]
+fn bare_angle_binds_a_head_to_one_balanced_payload() {
+    let block = recognize_single("Result<Vector<Ordered> Error>");
+    let (head, payload) = block.as_application().expect("angle application");
+    assert_eq!(block.application_form(), Some(ApplicationForm::Angle));
+    assert_eq!(head.demote_to_string(), Some("Result"));
+    assert!(payload.is_angle());
+    assert_eq!(payload.holds_root_objects(), 2);
+    let nested = payload.root_object_at(0).expect("nested vector");
+    assert_eq!(nested.application_form(), Some(ApplicationForm::Angle));
+    assert_eq!(nested.dotted_text(), None);
+}
+
+#[test]
+fn dot_before_an_angle_is_not_a_compatibility_spelling() {
+    assert!(
+        Recognizer::standard()
+            .recognize("Vector.<Ordered>")
+            .is_err()
+    );
 }
 
 /// A delimited payload — parenthesis, square bracket, or brace — binds to its

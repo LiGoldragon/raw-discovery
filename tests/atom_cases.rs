@@ -12,7 +12,7 @@ use raw_discovery::{Atom, AtomCase, Recognizer};
 fn exposes_structural_candidates_without_content_classification() {
     let document = Recognizer::standard()
         .recognize(
-            "TypeName field-name camelName schema:module:Type CustomMacro RecordPayload 42 name@host required* a&b score^2 100% x>y x<y path/to a;b",
+            "TypeName field-name camelName schema:module:Type CustomMacro RecordPayload 42 name@host required* a&b score^2 100% path/to a;b",
         )
         .expect("valid nota");
     let roots = document.root_objects();

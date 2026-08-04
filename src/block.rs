@@ -59,10 +59,10 @@ impl Document {
 ///
 /// [`Application`](Block::Application) is a **designed-explicit** variant. In
 /// nota's current parser, application is expressed structurally — a dotted head
-/// glued to its argument group — and never named as a variant. The accepted
+/// or an adjacent angle payload — and never named as a variant. The accepted
 /// design promotes it to a first-class node so the raw layer names what nota
-/// leaves implicit; the right-associative binding rule (`A.B.C = App(A, App(B, C))`)
-/// is unchanged and psyche-blessed.
+/// leaves implicit; the right-associative dot binding rule
+/// (`A.B.C = App(A, App(B, C))`) is unchanged.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
 #[rkyv(
     serialize_bounds(
@@ -83,29 +83,35 @@ pub enum Block {
         #[rkyv(omit_bounds)]
         root_objects: Vec<Block>,
     },
-    /// A dot-application: a head object bound to the payload glued after a
-    /// period, as one node. Right-associative: `A.B.C` is `App(A, App(B, C))`.
+    /// A dot or bare-angle application: a head object bound to one payload.
+    /// Dots are right-associative: `A.B.C` is `App(A, App(B, C))`.
     Application {
+        form: ApplicationForm,
         #[rkyv(omit_bounds)]
         head: Box<Block>,
         #[rkyv(omit_bounds)]
         payload: Box<Block>,
     },
-    /// A `(| … |)` multiline-string carrier: literal text a bare atom or a
+    /// A `“ … ”` balanced text carrier: literal text a bare atom or a
     /// delimiter cannot hold.
-    PipeText(PipeText),
+    CurlyText(CurlyText),
     /// A bare atom: an unbroken run of symbol characters.
     Atom(Atom),
 }
 
+/// The structural form that binds an application head to its payload.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationForm {
+    Dot,
+    Angle,
+}
+
 impl Block {
-    /// The head and payload of a dot-application, or `None` for any other
-    /// block. The head is the object left of the period (itself an application
-    /// for a dotted chain); the payload is the single object right of it.
+    /// The head and payload of an application, or `None` for any other block.
     pub fn as_application(&self) -> Option<(&Block, &Block)> {
         match self {
-            Self::Application { head, payload } => Some((head, payload)),
-            Self::Delimited { .. } | Self::PipeText(_) | Self::Atom(_) => None,
+            Self::Application { head, payload, .. } => Some((head, payload)),
+            Self::Delimited { .. } | Self::CurlyText(_) | Self::Atom(_) => None,
         }
     }
 
@@ -131,8 +137,12 @@ impl Block {
         self.is_delimited_with(Delimiter::Brace)
     }
 
-    pub fn is_pipe_text(&self) -> bool {
-        matches!(self, Self::PipeText(_))
+    pub fn is_angle(&self) -> bool {
+        self.is_delimited_with(Delimiter::Angle)
+    }
+
+    pub fn is_curly_text(&self) -> bool {
+        matches!(self, Self::CurlyText(_))
     }
 
     pub fn is_atom(&self) -> bool {
@@ -141,6 +151,14 @@ impl Block {
 
     pub fn is_application(&self) -> bool {
         matches!(self, Self::Application { .. })
+    }
+
+    /// The form used by this application, if it is an application.
+    pub fn application_form(&self) -> Option<ApplicationForm> {
+        match self {
+            Self::Application { form, .. } => Some(*form),
+            Self::Delimited { .. } | Self::CurlyText(_) | Self::Atom(_) => None,
+        }
     }
 
     pub fn is_delimited_with(&self, delimiter: Delimiter) -> bool {
@@ -157,7 +175,7 @@ impl Block {
             } if *found == delimiter => Some(root_objects),
             Self::Delimited { .. }
             | Self::Application { .. }
-            | Self::PipeText(_)
+            | Self::CurlyText(_)
             | Self::Atom(_) => None,
         }
     }
@@ -168,7 +186,7 @@ impl Block {
     pub fn holds_root_objects(&self) -> usize {
         match self {
             Self::Delimited { root_objects, .. } => root_objects.len(),
-            Self::Application { .. } | Self::PipeText(_) | Self::Atom(_) => 0,
+            Self::Application { .. } | Self::CurlyText(_) | Self::Atom(_) => 0,
         }
     }
 
@@ -183,23 +201,23 @@ impl Block {
     pub fn root_object_at(&self, index: usize) -> Option<&Block> {
         match self {
             Self::Delimited { root_objects, .. } => root_objects.get(index),
-            Self::Application { .. } | Self::PipeText(_) | Self::Atom(_) => None,
+            Self::Application { .. } | Self::CurlyText(_) | Self::Atom(_) => None,
         }
     }
 
     pub fn root_objects(&self) -> &[Block] {
         match self {
             Self::Delimited { root_objects, .. } => root_objects,
-            Self::Application { .. } | Self::PipeText(_) | Self::Atom(_) => &[],
+            Self::Application { .. } | Self::CurlyText(_) | Self::Atom(_) => &[],
         }
     }
 
     /// The atom this block is, or `None` for a delimited, application, or
-    /// pipe-text block.
+    /// curly-text block.
     pub fn atom(&self) -> Option<&Atom> {
         match self {
             Self::Atom(atom) => Some(atom),
-            Self::Delimited { .. } | Self::Application { .. } | Self::PipeText(_) => None,
+            Self::Delimited { .. } | Self::Application { .. } | Self::CurlyText(_) => None,
         }
     }
 
@@ -222,13 +240,13 @@ impl Block {
             .is_some_and(Atom::qualifies_as_kebab_case_symbol)
     }
 
-    /// The flat text of an atom or pipe-text block, or `None` for a delimited or
+    /// The flat text of an atom or curly-text block, or `None` for a delimited or
     /// application block. This exposes the atom's characters without classifying
     /// them.
     pub fn demote_to_string(&self) -> Option<&str> {
         match self {
             Self::Atom(atom) => Some(atom.text()),
-            Self::PipeText(pipe_text) => Some(pipe_text.text()),
+            Self::CurlyText(curly_text) => Some(curly_text.text()),
             Self::Delimited { .. } | Self::Application { .. } => None,
         }
     }
@@ -236,7 +254,7 @@ impl Block {
     /// The flat dotted text of an atom or a dotted chain of atoms, joining the
     /// segments with periods: `Atom("42")` → `"42"`, `App(rustfmt, skip)` →
     /// `"rustfmt.skip"`, `App(-122, 3)` → `"-122.3"`. `None` when any segment is
-    /// a delimited or pipe-text block, since those carry no flat text form.
+    /// a delimited or curly-text block, since those carry no flat text form.
     ///
     /// This is the join side of the dotted-primitive pair (the split side is
     /// [`Atom::split_at_first_dot`]). A consumer that *expects* a dotted literal
@@ -246,17 +264,26 @@ impl Block {
     pub fn dotted_text(&self) -> Option<String> {
         match self {
             Self::Atom(atom) => Some(atom.text().to_owned()),
-            Self::Application { head, payload } => {
+            Self::Application {
+                form: ApplicationForm::Dot,
+                head,
+                payload,
+            } => {
                 let head = head.dotted_text()?;
                 let payload = payload.dotted_text()?;
                 Some(format!("{head}.{payload}"))
             }
-            Self::Delimited { .. } | Self::PipeText(_) => None,
+            Self::Delimited { .. }
+            | Self::Application {
+                form: ApplicationForm::Angle,
+                ..
+            }
+            | Self::CurlyText(_) => None,
         }
     }
 }
 
-/// The three reader-serving delimiters. New glyphs require an explicit versioned
+/// The reader-serving delimiters. New glyphs require an explicit versioned
 /// profile revision, never runtime guessing — so this set is closed here and
 /// grows only through [`GlyphSet`](crate::GlyphSet).
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,6 +291,7 @@ pub enum Delimiter {
     Parenthesis,
     SquareBracket,
     Brace,
+    Angle,
 }
 
 impl Delimiter {
@@ -272,6 +300,7 @@ impl Delimiter {
             Self::Parenthesis => "(",
             Self::SquareBracket => "[",
             Self::Brace => "{",
+            Self::Angle => "<",
         }
     }
 
@@ -280,6 +309,7 @@ impl Delimiter {
             Self::Parenthesis => ")",
             Self::SquareBracket => "]",
             Self::Brace => "}",
+            Self::Angle => ">",
         }
     }
 
@@ -288,6 +318,7 @@ impl Delimiter {
             Self::Parenthesis => "parenthesis",
             Self::SquareBracket => "square bracket",
             Self::Brace => "brace",
+            Self::Angle => "angle",
         }
     }
 
@@ -308,6 +339,7 @@ impl Delimiter {
             '(' => Some(Self::Parenthesis),
             '[' => Some(Self::SquareBracket),
             '{' => Some(Self::Brace),
+            '<' => Some(Self::Angle),
             _ => None,
         }
     }
@@ -317,19 +349,20 @@ impl Delimiter {
             ')' => Some(Self::Parenthesis),
             ']' => Some(Self::SquareBracket),
             '}' => Some(Self::Brace),
+            '>' => Some(Self::Angle),
             _ => None,
         }
     }
 }
 
-/// A `(| … |)` multiline-string carrier. Holds literal text — delimiters,
+/// A `“ … ”` balanced text carrier. Holds literal text — delimiters,
 /// comment markers, whitespace — that a bare atom cannot represent.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Debug, Eq, PartialEq)]
-pub struct PipeText {
+pub struct CurlyText {
     text: String,
 }
 
-impl PipeText {
+impl CurlyText {
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
@@ -481,7 +514,7 @@ impl AtomCharacter {
         !self.character.is_whitespace()
             && !matches!(
                 self.character,
-                '"' | '.' | '(' | ')' | '[' | ']' | '{' | '}'
+                '"' | '.' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '“' | '”' | '|'
             )
     }
 }

@@ -56,6 +56,8 @@ fn exposes_delimiter_text_and_child_helpers() {
 
     assert_eq!(Delimiter::SquareBracket.opening_text(), "[");
     assert_eq!(Delimiter::SquareBracket.closing_text(), "]");
+    assert_eq!(Delimiter::Angle.opening_text(), "<");
+    assert_eq!(Delimiter::Angle.closing_text(), ">");
     assert_eq!(Delimiter::SquareBracket.description(), "square bracket");
     assert_eq!(
         Delimiter::Parenthesis.wrap(["Kind".to_owned(), "(Decision)".to_owned()]),

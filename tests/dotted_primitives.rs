@@ -49,7 +49,7 @@ fn dotted_text_joins_a_recognized_chain() {
     assert_eq!(block.dotted_text(), Some("alpha.beta.gamma".to_owned()));
 }
 
-/// `dotted_text` is `None` when any segment is a delimited or pipe-text block,
+/// `dotted_text` is `None` when any segment is a delimited or curly-text block,
 /// since those carry no flat text form.
 #[test]
 fn dotted_text_is_none_for_a_delimited_segment() {
