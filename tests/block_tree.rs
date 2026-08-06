@@ -12,7 +12,7 @@ use raw_discovery::{
 const PARENTHESIS: TriggerIdentifier = TriggerIdentifier::new(0);
 const SQUARE: TriggerIdentifier = TriggerIdentifier::new(1);
 const BRACE: TriggerIdentifier = TriggerIdentifier::new(2);
-const PIPE_TEXT: TriggerIdentifier = TriggerIdentifier::new(4);
+const CURLY_TEXT: TriggerIdentifier = TriggerIdentifier::new(4);
 const WHITESPACE: TriggerIdentifier = TriggerIdentifier::new(5);
 const COMMENT: TriggerIdentifier = TriggerIdentifier::new(6);
 
@@ -27,7 +27,7 @@ fn protos_configuration() -> BlockTreeDiscoveryConfiguration {
         PARENTHESIS,
         SQUARE,
         BRACE,
-        PIPE_TEXT,
+        CURLY_TEXT,
         WHITESPACE,
         COMMENT,
     ]);
@@ -89,8 +89,8 @@ fn discovery_rules_are_canonical_archiveable_and_order_independent_when_sealed()
     let profile = RawProfile::standard().seal().expect("standard profile");
     let root = context(70);
     let child = context(71);
-    let root_triggers = TriggerSet::new(vec![PARENTHESIS, SQUARE, PIPE_TEXT, WHITESPACE]);
-    let child_triggers = TriggerSet::new(vec![PARENTHESIS, PIPE_TEXT, WHITESPACE]);
+    let root_triggers = TriggerSet::new(vec![PARENTHESIS, SQUARE, CURLY_TEXT, WHITESPACE]);
+    let child_triggers = TriggerSet::new(vec![PARENTHESIS, CURLY_TEXT, WHITESPACE]);
     let contexts = vec![
         BoundaryDiscoveryContext::new(root, root_triggers),
         BoundaryDiscoveryContext::new(child, child_triggers),
@@ -339,10 +339,10 @@ fn discovery_rule_sealing_refuses_non_discovery_and_non_boundary_rules() {
         BoundaryDiscoveryConfiguration::new(
             root,
             vec![
-                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![PIPE_TEXT])),
+                BoundaryDiscoveryContext::new(root, TriggerSet::new(vec![CURLY_TEXT])),
                 BoundaryDiscoveryContext::new(child, TriggerSet::new(Vec::new())),
             ],
-            vec![BoundaryDiscoveryTransition::new(root, PIPE_TEXT, child)],
+            vec![BoundaryDiscoveryTransition::new(root, CURLY_TEXT, child)],
         ),
         Vec::new(),
     );
@@ -350,7 +350,7 @@ fn discovery_rule_sealing_refuses_non_discovery_and_non_boundary_rules() {
         carrier_transition.seal(&profile),
         Err(BlockDiscoveryError::Boundary(
             BoundaryDiscoveryError::TransitionRequiresBoundary { context, trigger }
-        )) if context == root && trigger == PIPE_TEXT
+        )) if context == root && trigger == CURLY_TEXT
     ));
 
     let non_boundary_prefix = BlockTreeDiscoveryConfiguration::new(
@@ -363,13 +363,13 @@ fn discovery_rule_sealing_refuses_non_discovery_and_non_boundary_rules() {
             vec![BoundaryDiscoveryTransition::new(root, PARENTHESIS, child)],
         ),
         vec![BlockPrefixAttachment::new(
-            PIPE_TEXT,
+            CURLY_TEXT,
             BlockPrefixRule::new(".", CharacterClass::AsciiAlphabetic),
         )],
     );
     assert!(matches!(
         non_boundary_prefix.seal(&profile),
-        Err(BlockDiscoveryError::PrefixRequiresBoundary { trigger }) if trigger == PIPE_TEXT
+        Err(BlockDiscoveryError::PrefixRequiresBoundary { trigger }) if trigger == CURLY_TEXT
     ));
 
     let unconfigured_prefix = BlockTreeDiscoveryConfiguration::new(
