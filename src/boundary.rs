@@ -4,11 +4,11 @@
 //! trigger set for its current expected structural position, consumes one
 //! boundary event, and recursively supplies the next position's set.
 
-use content_identity::ContentHash;
+use content_identity::ContentAddressedHash;
 
 use crate::profile::{
     CharacterClass, SealedBoundaryDiscoverySet, SealedTokenProfile, SealedTriggerSet,
-    TokenProfileDomain, TokenProfileError, Trigger, TriggerIdentifier, TriggerSet,
+    TokenProfileError, Trigger, TriggerIdentifier, TriggerSet,
 };
 use thiserror::Error;
 
@@ -346,7 +346,7 @@ pub struct SealedBoundaryDiscoveryConfiguration {
     root: BoundaryDiscoveryContextIdentifier,
     contexts: Vec<SealedBoundaryDiscoveryContext>,
     transitions: Vec<BoundaryDiscoveryTransition>,
-    profile_identity: ContentHash<TokenProfileDomain>,
+    profile_identity: ContentAddressedHash,
 }
 
 impl SealedBoundaryDiscoveryConfiguration {

@@ -6,7 +6,7 @@
 //! cursor. Longest complete match is universal machinery; authored precedence
 //! is deliberately unrepresentable.
 
-use content_identity::{ContentHash, DomainSeparation, HashDomain, LayoutVersion};
+use content_identity::{ContentAddressedHash, PortableArchive};
 use thiserror::Error;
 
 static WHITESPACE_CLASS: CharacterClass = CharacterClass::Whitespace;
@@ -511,24 +511,12 @@ impl TokenProfileData {
     }
 }
 
-/// Layout-3 contextual identity of sealed token-profile data.
-pub struct TokenProfileDomain;
-
-impl HashDomain for TokenProfileDomain {
-    fn separation() -> DomainSeparation {
-        DomainSeparation::Contextual {
-            context: "raw-discovery 2026 recursive token profile",
-            layout: LayoutVersion::new(4),
-        }
-    }
-}
-
 /// A token profile whose definitions and root context passed universal static
 /// ambiguity checks.
 #[derive(Clone, Debug)]
 pub struct SealedTokenProfile {
     data: TokenProfileData,
-    identity: ContentHash<TokenProfileDomain>,
+    identity: ContentAddressedHash,
 }
 
 impl SealedTokenProfile {
@@ -544,7 +532,7 @@ impl SealedTokenProfile {
                 ));
             }
         }
-        let identity = ContentHash::<TokenProfileDomain>::of_core(&data)?;
+        let identity = ContentAddressedHash::derive(data.to_archive_bytes()?.as_ref());
         let sealed = Self { data, identity };
         sealed.seal_trigger_set(sealed.data.root_triggers.clone())?;
         Ok(sealed)
@@ -562,7 +550,7 @@ impl SealedTokenProfile {
             .expect("the built-in Nomos profile is statically valid")
     }
 
-    pub fn identity(&self) -> ContentHash<TokenProfileDomain> {
+    pub fn identity(&self) -> ContentAddressedHash {
         self.identity
     }
 
@@ -778,12 +766,12 @@ impl SealedTokenProfile {
 /// An active trigger set sealed against one exact token profile.
 #[derive(Clone, Debug)]
 pub struct SealedTriggerSet {
-    profile_identity: ContentHash<TokenProfileDomain>,
+    profile_identity: ContentAddressedHash,
     triggers: TriggerSet,
 }
 
 impl SealedTriggerSet {
-    pub fn profile_identity(&self) -> ContentHash<TokenProfileDomain> {
+    pub fn profile_identity(&self) -> ContentAddressedHash {
         self.profile_identity
     }
 
@@ -803,7 +791,7 @@ pub struct SealedBoundaryDiscoverySet {
 }
 
 impl SealedBoundaryDiscoverySet {
-    pub fn profile_identity(&self) -> ContentHash<TokenProfileDomain> {
+    pub fn profile_identity(&self) -> ContentAddressedHash {
         self.triggers.profile_identity()
     }
 
@@ -879,10 +867,6 @@ pub enum TokenProfileError {
         found: TriggerIdentifier,
         byte_offset: usize,
     },
-    #[error("trigger {0:?} has no representation in the compatibility Block algebra")]
-    UnsupportedCompatibilityTrigger(TriggerIdentifier),
-    #[error("boundary trigger {0:?} has no compatibility Block delimiter")]
-    UnsupportedCompatibilityBoundary(TriggerIdentifier),
     #[error("carrier {identifier:?} opened at byte {byte_offset} but never closed")]
     UnclosedCarrier {
         identifier: TriggerIdentifier,

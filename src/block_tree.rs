@@ -368,7 +368,7 @@ pub trait BlockTree {
 /// One runtime-only node in a boundary-discovered block tree.
 ///
 /// It deliberately has no archive derives: the bounds refer to one source
-/// text and therefore do not belong to portable `Block` or `Document`
+/// text and therefore do not belong to portable source-bounded discovery
 /// identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveredBlock {

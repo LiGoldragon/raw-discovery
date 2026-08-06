@@ -1,6 +1,4 @@
-//! Runtime block-tree witnesses. These assertions cover only source-bounded
-//! boundary discovery; typed parsing and archived `Block` compatibility stay
-//! outside this surface.
+//! Runtime source-bounded block-tree witnesses.
 
 use content_identity::PortableArchive;
 use raw_discovery::{

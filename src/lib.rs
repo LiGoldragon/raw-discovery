@@ -1,53 +1,13 @@
-//! # raw-discovery — the language-agnostic raw structure layer
+//! # raw-discovery
 //!
-//! This crate discovers structure and **never classifies**. The live
-//! source-bounded path produces recursive delimiter or cue-terminated
-//! [`BlockTree`] values before expected types interpret them. The compatibility
-//! [`Recognizer`] still reads established NOTA text into portable [`Block`]s.
-//! "Declaration", "field", "name", and "type" are words this crate does not
-//! know; the expected types that give structure meaning live entirely in the
-//! crates above it.
-//!
-//! That invariant is the crate's reason to exist as a boundary. A consumer that
-//! wants only structure — a formatter, a linter, a tree-sitter bridge — links
-//! raw-discovery alone and never drags in any Core language model.
-//!
-//! ## What is discovered
-//!
-//! - [`Block`] — the raw node: [`Delimited`](Block::Delimited),
-//!   [`Application`](Block::Application), [`CurlyText`], [`Atom`]. Application is
-//!   a **designed-explicit** variant: nota expresses it structurally through a
-//!   dotted head, and the accepted design promotes it to a first-class node so
-//!   the raw layer names what nota leaves implicit.
-//! - [`Delimiter`] — `( )`, `[ ]`, `{ }`, `< >`.
-//! - The dotted primitives: [`Atom::split_at_first_dot`] /
-//!   [`Atom::split_text_at_first_dot`] (split) and [`Block::dotted_text`] (join).
-//! - [`AtomCase`] — the capitalization classifier, exposed as **data** with no
-//!   meaning attached.
-//!
-//! ## Profiles are sealed, versioned data
-//!
-//! [`TokenProfileData`] identifies generic boundary triggers. A structural
-//! position activates a [`TriggerSet`], and [`BoundaryReader`] applies longest
-//! complete match only within that sealed active set. Recognition is
-//! boundary-first and recursive; it never constructs a preliminary token
-//! stream. [`RawProfile`] and [`GlyphSet`] remain compatibility selectors for
-//! the established NOTA profiles and seal into the same generic machinery.
-//!
-//! ## The raw-layer boundary
-//!
-//! [`RawLayer::Foreign`] is a typed target-language placeholder, not a parser
-//! escape hatch. Target languages supply sealed profile and structural-form
-//! data to the shared evaluator rather than installing another textual engine.
+//! Source-bounded discovery of recursive delimiter and cue-terminated
+//! [`BlockTree`] values. It supplies no unbounded syntax tree, language
+//! recognition, target-language placeholder, or semantic classification.
 
-mod block;
 mod block_tree;
 mod boundary;
-mod error;
 mod profile;
-mod recognizer;
 
-pub use block::{ApplicationForm, Atom, AtomCase, Block, CurlyText, Delimiter, Document};
 pub use block_tree::{
     BlockCue, BlockDiscoveryError, BlockPrefix, BlockPrefixAttachment, BlockPrefixRule, BlockTree,
     BlockTreeDiscoveryConfiguration, CueTerminatedBlockCueEvidence,
@@ -62,11 +22,8 @@ pub use boundary::{
     DelimitedBoundary, DiscoveredDelimitedBoundary, SealedBoundaryDiscoveryConfiguration,
     SourceBound, TriggerMatch, TriggerMatchKind,
 };
-pub use error::{FoundClose, RecognizeError, SourcePosition};
 pub use profile::{
     CharacterClass, CharacterSet, GlyphSet, ProfileRevision, RawProfile,
     SealedBoundaryDiscoverySet, SealedTokenProfile, SealedTriggerSet, TokenProfileData,
-    TokenProfileDomain, TokenProfileError, Trigger, TriggerDefinition, TriggerIdentifier,
-    TriggerSet, TriggerTextRole,
+    TokenProfileError, Trigger, TriggerDefinition, TriggerIdentifier, TriggerSet, TriggerTextRole,
 };
-pub use recognizer::{ForeignLanguage, ForeignRawLayer, RawLayer, Recognizer};

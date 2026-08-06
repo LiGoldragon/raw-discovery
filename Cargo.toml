@@ -1,6 +1,6 @@
 [package]
 name         = "raw-discovery"
-version      = "0.4.0"
+version      = "0.5.0"
 edition      = "2024"
 rust-version = "1.85"
 license      = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ name = "raw_discovery"
 path = "src/lib.rs"
 
 [dependencies]
-content-identity = { git = "https://github.com/LiGoldragon/content-identity.git", rev = "24b43bae5d9748b0e7f679c6ec9f85a643c4d36a" }
+content-identity = { git = "https://github.com/LiGoldragon/content-identity.git", rev = "7f005b3b73ae141d11b9723ab38e69c9d4859410" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 thiserror = "2"
 
